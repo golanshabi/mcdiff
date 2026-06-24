@@ -1,0 +1,27 @@
+#!/bin/bash
+set -euo pipefail
+
+COMMAND_NAME="mcdiff"
+APP_BUNDLE="$(cd "$(dirname "$0")/.." && pwd)/build/mcdiff.app"
+
+absolute_path() {
+  local input="$1"
+  if [[ "${input}" == /* ]]; then
+    printf '%s\n' "${input}"
+    return
+  fi
+
+  local directory
+  local basename
+  directory="$(dirname "${input}")"
+  basename="$(basename "${input}")"
+  printf '%s/%s\n' "$(cd "${directory}" && pwd -P)" "${basename}"
+}
+
+if [ "$#" -ne 2 ]; then
+  echo "Usage:"
+  echo "  ${COMMAND_NAME} <left-file> <right-file>"
+  exit 1
+fi
+
+open "${APP_BUNDLE}" --args "$(absolute_path "$1")" "$(absolute_path "$2")"
