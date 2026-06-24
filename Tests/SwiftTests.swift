@@ -30,12 +30,46 @@ private func labels(in view: NSView) -> [NSTextField] {
     allSubviews(of: view).compactMap { $0 as? NSTextField }
 }
 
+private func labels(in view: NSView, identifier: String) -> [NSTextField] {
+    stackViews(in: view, identifier: identifier).flatMap { stack in
+        allSubviews(of: stack).compactMap { $0 as? NSTextField }
+    }
+}
+
+private func text(in view: NSView, identifier: String) -> String {
+    labels(in: view, identifier: identifier).map(\.stringValue).joined(separator: "\n")
+}
+
+private func labelString(in view: NSView, identifier: String) -> String {
+    labels(in: view)
+        .filter { $0.identifier?.rawValue == identifier }
+        .map(\.stringValue)
+        .joined(separator: "\n")
+}
+
+private func labelStrings(in view: NSView, identifier: String) -> [String] {
+    labels(in: view)
+        .filter { $0.identifier?.rawValue == identifier }
+        .map(\.stringValue)
+}
+
+private func textLines(in view: NSView, identifier: String) -> [String] {
+    labels(in: view, identifier: identifier)
+        .flatMap { $0.stringValue.components(separatedBy: "\n") }
+}
+
 private func stackViews(in view: NSView) -> [NSStackView] {
     allSubviews(of: view).compactMap { $0 as? NSStackView }
 }
 
 private func stackViews(in view: NSView, identifier: String) -> [NSStackView] {
     stackViews(in: view).filter { $0.identifier?.rawValue == identifier }
+}
+
+private func lineCount(in row: NSStackView, identifier: String) -> Int {
+    labels(in: row, identifier: identifier)
+        .map { max($0.stringValue.components(separatedBy: "\n").count, 1) }
+        .max() ?? 1
 }
 
 private func window(for controller: MainWindowController) -> NSWindow {
@@ -192,8 +226,14 @@ private func testMainWindowIdenticalFilesEnableSaveWithoutPick() throws {
     layout(testWindow, controller)
 
     let labelText = labels(in: controller.view).map(\.stringValue).joined(separator: "\n")
-    assertTrue(labelText.contains("1  alpha"), "identical files render first line")
-    assertTrue(labelText.contains("2  beta"), "identical files render second line")
+    assertTrue(labelText.contains("alpha"), "identical files render first line")
+    assertTrue(labelText.contains("beta"), "identical files render second line")
+    assertTrue(labelString(in: controller.view, identifier: "leftSideLineNumbers").contains("1"), "identical files render left line numbers")
+    assertTrue(labelString(in: controller.view, identifier: "mergedSideLineNumbers").isEmpty, "identical files do not render merged line numbers")
+    assertTrue(labelString(in: controller.view, identifier: "rightSideLineNumbers").contains("1"), "identical files render right line numbers")
+    assertTrue(text(in: controller.view, identifier: "leftSide").contains("alpha"), "identical files render left pane")
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("alpha"), "identical files render merged pane")
+    assertTrue(text(in: controller.view, identifier: "rightSide").contains("alpha"), "identical files render right pane")
     assertTrue(buttons(in: controller.view).contains { $0.title == "Use Left" } == false, "identical files have no pick buttons")
 
     let save = buttons(in: controller.view).first { $0.title == "Save Result" }
@@ -219,6 +259,8 @@ private func testMainWindowLoadsAndPicksDiff() throws {
     assertTrue(labelText.contains("right"), "rendered right-side changed line")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "leftSide"), redAtLeast: 0.8), "changed left side is red")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "rightSide"), greenAtLeast: 0.45), "changed right side is green")
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "merged pane starts unresolved")
+    assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "mergedSide"), redAtLeast: 0.8, greenAtLeast: 0.3), "unresolved merged pane uses fourth color")
 
     let useRight = buttons(in: controller.view).first { $0.title == "Use Right" }
     assertTrue(useRight != nil, "rendered Use Right button")
@@ -228,9 +270,11 @@ private func testMainWindowLoadsAndPicksDiff() throws {
     let save = buttons(in: controller.view).first { $0.title == "Save Result" }
     assertTrue(save?.isEnabled == true, "save enables after picking a changed block")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "rightSide"), blueAtLeast: 0.7), "picked right side is blue")
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("right"), "merged pane updates to picked right content")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "merged pane clears unresolved state after pick")
 }
 
-private func testDeletionDiffRequiresExplicitPick() {
+private func testDeletionDiffRequiresExplicitPickAndUpdatesMergedPane() {
     let controller = MainWindowController()
     controller.loadView()
     let testWindow = window(for: controller)
@@ -240,7 +284,11 @@ private func testDeletionDiffRequiresExplicitPick() {
     layout(testWindow, controller)
 
     let labelText = labels(in: controller.view).map(\.stringValue).joined(separator: "\n")
-    assertTrue(labelText.contains("4  d"), "rendered deleted line from left file")
+    assertTrue(labelText.contains("d"), "rendered deleted line from left file")
+    assertTrue(labelString(in: controller.view, identifier: "leftSideLineNumbers").contains("4"), "deletion diff renders left line number gutter")
+    assertTrue(labelString(in: controller.view, identifier: "mergedSideLineNumbers").isEmpty, "deletion diff does not render merged line numbers")
+    assertTrue(labelString(in: controller.view, identifier: "rightSideLineNumbers").contains("4"), "deletion diff renders right line number gutter")
+    assertTrue(labelStrings(in: controller.view, identifier: "rightSideLineNumbers").contains(""), "empty right-side deletion row has no line number")
     assertTrue(labels(in: controller.view).contains { !$0.frame.isEmpty && !$0.isHidden }, "rendered labels have visible frames")
 
     let save = buttons(in: controller.view).first { $0.title == "Save Result" }
@@ -249,6 +297,69 @@ private func testDeletionDiffRequiresExplicitPick() {
     assertTrue(buttons(in: controller.view).contains { $0.title == "Use Right" }, "deletion diff renders Use Right")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "leftSide"), redAtLeast: 0.8), "deletion diff shows red deletion side")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "rightSide"), greenAtLeast: 0.45), "deletion diff shows green addition side")
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "deletion merged pane starts unresolved")
+
+    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    layout(testWindow, controller)
+    assertTrue(!textLines(in: controller.view, identifier: "mergedSide").contains("d"), "right pick removes deleted line from merged pane")
+    assertTrue(labelString(in: controller.view, identifier: "mergedSideLineNumbers").isEmpty, "picked deletion still does not render merged line numbers")
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "other unpicked block remains unresolved")
+
+    buttons(in: controller.view).first { $0.title == "Use Left" }?.performClick(nil)
+    layout(testWindow, controller)
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide").contains("d"), "left pick keeps deleted line in merged pane")
+}
+
+private func testChangedRowsDoNotGetExtraHeightFromPickButtons() {
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: URL(fileURLWithPath: "Tests/diff_1"),
+                    right: URL(fileURLWithPath: "Tests/diff_2"))
+    layout(testWindow, controller)
+
+    let rows = stackViews(in: controller.view, identifier: "blockRow")
+    assertTrue(rows.count >= 3, "fixture renders multiple block rows")
+
+    let heightsPerLine = rows.map { row in
+        row.layoutSubtreeIfNeeded()
+        return row.frame.height / CGFloat(lineCount(in: row, identifier: "leftSide"))
+    }
+    guard let first = heightsPerLine.first else {
+        assertTrue(false, "fixture has a first row")
+        return
+    }
+
+    for height in heightsPerLine.dropFirst() {
+        assertTrue(abs(height - first) < 3.0, "changed rows keep same line height density as equal rows")
+    }
+}
+
+private func testPickingOneBlockLeavesOtherMergedBlocksUnresolved() throws {
+    let files = try temporaryDirectory("multi-change-files")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "a\nleft1\nb\nleft2\nc\n".write(to: left, atomically: true, encoding: .utf8)
+    try "a\nright1\nb\nright2\nc\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    assertTrue(text(in: controller.view, identifier: "mergedSide").components(separatedBy: "Unresolved").count - 1 == 2,
+               "both changed blocks start unresolved")
+
+    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    layout(testWindow, controller)
+
+    let mergedText = text(in: controller.view, identifier: "mergedSide")
+    assertTrue(mergedText.contains("right1"), "first picked block updates merged pane")
+    assertTrue(!mergedText.contains("left1"), "first picked block no longer shows old text in merged pane")
+    assertTrue(mergedText.contains("Unresolved"), "second unpicked block remains unresolved")
 }
 
 @main
@@ -260,7 +371,9 @@ private enum SwiftTests {
             testMainWindowInitialState()
             try testMainWindowIdenticalFilesEnableSaveWithoutPick()
             try testMainWindowLoadsAndPicksDiff()
-            testDeletionDiffRequiresExplicitPick()
+            testDeletionDiffRequiresExplicitPickAndUpdatesMergedPane()
+            testChangedRowsDoNotGetExtraHeightFromPickButtons()
+            try testPickingOneBlockLeavesOtherMergedBlocksUnresolved()
         } catch {
             fputs("Swift test failed: \(error.localizedDescription)\n", stderr)
             exit(1)

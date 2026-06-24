@@ -5,6 +5,12 @@ private final class PickButton: NSButton {
     var picksLeft = false
 }
 
+private enum DiffPane {
+    case left
+    case merged
+    case right
+}
+
 final class MainWindowController: NSViewController {
     private let leftButton = NSButton(title: "Choose Left File", target: nil, action: nil)
     private let rightButton = NSButton(title: "Choose Right File", target: nil, action: nil)
@@ -31,6 +37,7 @@ final class MainWindowController: NSViewController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = stack
         scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
 
         let root = NSStackView(views: [bar, scroll])
         root.orientation = .vertical
@@ -46,7 +53,6 @@ final class MainWindowController: NSViewController {
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
             stack.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor)
         ])
 
@@ -118,56 +124,180 @@ final class MainWindowController: NSViewController {
     }
 
     private func render() {
-        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        stack.arrangedSubviews.forEach {
+            stack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
         guard let document else { return }
         // Blocks are rendered from the mutable bridge objects, so choosing a
         // side can update the model and redraw without rebuilding the diff.
-        for block in document.blocks { stack.addArrangedSubview(blockView(block)) }
+        var mergedStartLine = 1
+        for block in document.blocks {
+            stack.addArrangedSubview(blockView(block, mergedStartLine: mergedStartLine))
+            mergedStartLine += mergedOutputLineCount(for: block)
+        }
     }
 
-    private func blockView(_ block: MDBlock) -> NSView {
+    private func blockView(_ block: MDBlock, mergedStartLine: Int) -> NSView {
         let row = NSStackView()
+        row.identifier = NSUserInterfaceItemIdentifier("blockRow")
         row.orientation = .horizontal
         row.spacing = 0
 
-        row.addArrangedSubview(sideView(block, left: true))
-        row.addArrangedSubview(sideView(block, left: false))
+        row.addArrangedSubview(pickButtonSlot(block, picksLeft: true))
+
+        let panes = NSStackView()
+        panes.orientation = .horizontal
+        panes.spacing = 0
+        panes.distribution = .fillEqually
+        panes.addArrangedSubview(paneView(block, pane: .left, mergedStartLine: mergedStartLine))
+        panes.addArrangedSubview(paneView(block, pane: .merged, mergedStartLine: mergedStartLine))
+        panes.addArrangedSubview(paneView(block, pane: .right, mergedStartLine: mergedStartLine))
+        panes.widthAnchor.constraint(greaterThanOrEqualToConstant: 960).isActive = true
+        row.addArrangedSubview(panes)
+
+        row.addArrangedSubview(pickButtonSlot(block, picksLeft: false))
         return row
     }
 
-    private func sideView(_ block: MDBlock, left: Bool) -> NSView {
+    private func pickButtonSlot(_ block: MDBlock, picksLeft: Bool) -> NSView {
+        let view = NSView()
+        view.widthAnchor.constraint(equalToConstant: 92).isActive = true
+
+        if block.kind == .changed {
+            let button = PickButton(title: picksLeft ? "Use Left" : "Use Right", target: self, action: #selector(pick(_:)))
+            button.block = block
+            button.picksLeft = picksLeft
+            button.controlSize = .small
+            button.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(button)
+            NSLayoutConstraint.activate([
+                button.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                button.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+            ])
+        }
+
+        return view
+    }
+
+    private func paneView(_ block: MDBlock, pane: DiffPane, mergedStartLine: Int) -> NSView {
         let view = NSStackView()
-        view.identifier = NSUserInterfaceItemIdentifier(left ? "leftSide" : "rightSide")
+        view.identifier = NSUserInterfaceItemIdentifier(identifier(for: pane))
         view.orientation = .vertical
         view.spacing = 6
-        view.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        view.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
         view.wantsLayer = true
-        if block.kind == .changed {
-            if (left && block.pick == .left) || (!left && block.pick == .right) {
-                view.layer?.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.22).cgColor
-            } else {
-                view.layer?.backgroundColor = (left ? NSColor.systemRed : NSColor.systemGreen)
-                    .withAlphaComponent(0.16)
-                    .cgColor
-            }
+        if let color = backgroundColor(for: block, pane: pane) {
+            view.layer?.backgroundColor = color.cgColor
         }
-        view.widthAnchor.constraint(greaterThanOrEqualToConstant: 480).isActive = true
+        view.widthAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
 
-        if block.kind == .changed {
-            let button = PickButton(title: left ? "Use Left" : "Use Right", target: self, action: #selector(pick(_:)))
-            button.block = block
-            button.picksLeft = left
-            view.addArrangedSubview(button)
+        let display = displayedLines(for: block, pane: pane, mergedStartLine: mergedStartLine)
+        let content = NSStackView()
+        content.orientation = .horizontal
+        content.spacing = 8
+        content.alignment = .top
+
+        if pane != .merged {
+            let numbers = NSTextField(labelWithString: lineNumberText(lines: display.lines, start: display.start))
+            numbers.identifier = NSUserInterfaceItemIdentifier("\(identifier(for: pane))LineNumbers")
+            numbers.alignment = .right
+            numbers.textColor = .secondaryLabelColor
+            numbers.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+            numbers.lineBreakMode = .byClipping
+            numbers.widthAnchor.constraint(equalToConstant: 42).isActive = true
+            content.addArrangedSubview(numbers)
         }
 
-        let lines = (left ? block.leftLines : block.rightLines) ?? []
-        let start = left ? block.leftStartLine : block.rightStartLine
-        let text = lines.enumerated().map { "\(start + $0.offset)  \($0.element)" }.joined(separator: "\n")
+        let text = display.lines.joined(separator: "\n")
         let label = NSTextField(labelWithString: text.isEmpty ? " " : text)
         label.font = NSFont.monospacedSystemFont(ofSize: 12, weight: NSFont.Weight.regular)
         label.lineBreakMode = NSLineBreakMode.byClipping
-        view.addArrangedSubview(label)
+        content.addArrangedSubview(label)
+
+        view.addArrangedSubview(content)
         return view
+    }
+
+    private func identifier(for pane: DiffPane) -> String {
+        switch pane {
+            case .left:
+                return "leftSide"
+            case .merged:
+                return "mergedSide"
+            case .right:
+                return "rightSide"
+        }
+    }
+
+    private func backgroundColor(for block: MDBlock, pane: DiffPane) -> NSColor? {
+        guard block.kind == .changed else { return nil }
+
+        switch pane {
+            case .left:
+                return block.pick == .left ? NSColor.systemBlue.withAlphaComponent(0.22) : NSColor.systemRed.withAlphaComponent(0.16)
+            case .merged:
+                return block.pick == .unpicked ? NSColor.systemOrange.withAlphaComponent(0.16) : nil
+            case .right:
+                return block.pick == .right ? NSColor.systemBlue.withAlphaComponent(0.22) : NSColor.systemGreen.withAlphaComponent(0.16)
+        }
+    }
+
+    private func displayedLines(for block: MDBlock, pane: DiffPane, mergedStartLine: Int) -> (lines: [String], start: Int?) {
+        switch pane {
+            case .left:
+                return (block.leftLines ?? [], block.leftStartLine)
+            case .right:
+                return (block.rightLines ?? [], block.rightStartLine)
+            case .merged:
+                return mergedLines(for: block, start: mergedStartLine)
+        }
+    }
+
+    private func lineNumberText(lines: [String], start: Int?) -> String {
+        let lineCount = max(lines.count, 1)
+        guard let start, start > 0 else {
+            return String(repeating: "\n", count: lineCount - 1)
+        }
+
+        return (0..<lineCount).map { index in
+            guard index < lines.count, !lines[index].isEmpty else { return "" }
+            return "\(start + index)"
+        }.joined(separator: "\n")
+    }
+
+    private func mergedLines(for block: MDBlock, start: Int) -> (lines: [String], start: Int?) {
+        if block.kind == .equal {
+            return (block.leftLines ?? [], start)
+        }
+
+        switch block.pick {
+            case .left:
+                return (block.leftLines ?? [], start)
+            case .right:
+                return (block.rightLines ?? [], start)
+            case .unpicked:
+                return (["Unresolved"], nil)
+            @unknown default:
+                return (["Unresolved"], nil)
+        }
+    }
+
+    private func mergedOutputLineCount(for block: MDBlock) -> Int {
+        if block.kind == .equal {
+            return block.leftLines?.count ?? 0
+        }
+
+        switch block.pick {
+            case .left:
+                return block.leftLines?.count ?? 0
+            case .right:
+                return block.rightLines?.count ?? 0
+            case .unpicked:
+                return 0
+            @unknown default:
+                return 0
+        }
     }
 
     @objc private func pick(_ sender: PickButton) {

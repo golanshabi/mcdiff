@@ -30,13 +30,14 @@ final class MacDiffApp: NSObject, NSApplicationDelegate {
             return
         }
 
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1600, height: 950),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered,
                           defer: false)
         window.title = "mcdiff"
-        window.center()
+        window.minSize = NSSize(width: 1200, height: 800)
         window.contentViewController = controller
+        sizeWindowForCurrentScreen()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         AppLogger.info("Main window created and activated.")
@@ -49,5 +50,23 @@ final class MacDiffApp: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    private func sizeWindowForCurrentScreen() {
+        guard let screen = NSScreen.main else {
+            window.center()
+            return
+        }
+
+        let visible = screen.visibleFrame
+        let horizontalInset: CGFloat = 36
+        let verticalInset: CGFloat = 36
+        let width = max(min(visible.width - horizontalInset * 2, 1800), min(window.minSize.width, visible.width))
+        let height = max(min(visible.height - verticalInset * 2, 1100), min(window.minSize.height, visible.height))
+        let frame = NSRect(x: visible.midX - width / 2,
+                           y: visible.midY - height / 2,
+                           width: width,
+                           height: height)
+        window.setFrame(frame, display: false)
     }
 }
