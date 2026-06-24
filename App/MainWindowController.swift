@@ -137,6 +137,7 @@ final class MainWindowController: NSViewController {
 
     private func sideView(_ block: MDBlock, left: Bool) -> NSView {
         let view = NSStackView()
+        view.identifier = NSUserInterfaceItemIdentifier(left ? "leftSide" : "rightSide")
         view.orientation = .vertical
         view.spacing = 6
         view.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
