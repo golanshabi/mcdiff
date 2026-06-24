@@ -70,12 +70,128 @@ private final class PaneHorizontalState {
 
 private protocol PaneTextClipViewDelegate: AnyObject {
     func paneTextClipView(_ clipView: PaneTextClipView, didScrollHorizontallyBy deltaX: CGFloat)
+    func paneTextClipView(_ clipView: PaneTextClipView, didBeginSelectionAt characterIndex: Int)
+    func paneTextClipView(_ clipView: PaneTextClipView, didDragSelectionTo windowPoint: NSPoint)
+    func paneTextClipViewDidFinishSelection(_ clipView: PaneTextClipView)
+    func paneTextClipViewWillUseNativeSelection(_ clipView: PaneTextClipView)
+    func paneTextClipViewCopySelectedText(_ clipView: PaneTextClipView) -> Bool
+}
+
+private final class PaneTextView: NSTextView {
+    weak var clipView: PaneTextClipView?
+
+    override var acceptsFirstResponder: Bool {
+        true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let clipView else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        if event.clickCount > 1 {
+            window?.makeFirstResponder(self)
+            clipView.selectWord(with: event)
+            return
+        }
+
+        window?.makeFirstResponder(self)
+        clipView.beginSelection(with: event)
+        while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            switch next.type {
+                case .leftMouseDragged:
+                    clipView.dragSelection(with: next)
+                case .leftMouseUp:
+                    clipView.finishSelection()
+                    return
+                default:
+                    break
+            }
+        }
+        clipView.finishSelection()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        let deltaX = event.scrollingDeltaX
+        if abs(deltaX) > abs(event.scrollingDeltaY), abs(deltaX) > 0 {
+            clipView?.forwardHorizontalScroll(deltaX)
+        } else {
+            super.scrollWheel(with: event)
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.command),
+           event.charactersIgnoringModifiers?.lowercased() == "c" {
+            copy(nil)
+            return
+        }
+
+        super.keyDown(with: event)
+    }
+
+    override func copy(_ sender: Any?) {
+        if clipView?.copySelectedTextToPasteboard() == true {
+            return
+        }
+        super.copy(sender)
+    }
+
+    override func setSelectedRange(_ charRange: NSRange) {
+        guard let clipView else {
+            super.setSelectedRange(charRange)
+            return
+        }
+
+        clipView.select(range: charRange)
+    }
+
+    override func selectedRange() -> NSRange {
+        clipView?.selectedRange ?? super.selectedRange()
+    }
+}
+
+final class PaneSelectionOverlayView: NSView {
+    var selectedRects = [NSRect]() {
+        didSet {
+            isHidden = selectedRects.isEmpty
+            needsDisplay = true
+        }
+    }
+
+    override var isFlipped: Bool {
+        true
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.systemBlue.setFill()
+        for rect in selectedRects {
+            rect.intersection(bounds).fill()
+        }
+    }
 }
 
 private final class PaneTextClipView: NSView {
     let pane: DiffPane
-    private let label: NSTextField
+    private let textView: PaneTextView
+    private let selectionOverlay: PaneSelectionOverlayView
+    private let selectableText: String
+    private let textSize: NSSize
+    private var customSelectedRange = NSRange(location: 0, length: 0)
     weak var delegate: PaneTextClipViewDelegate?
+
+    private static var selectionAttributes: [NSAttributedString.Key: Any] {
+        [
+            .backgroundColor: NSColor.clear,
+            .foregroundColor: NSColor.labelColor
+        ]
+    }
 
     var textOffset: CGFloat = 0 {
         didSet {
@@ -88,21 +204,46 @@ private final class PaneTextClipView: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        let labelSize = label.intrinsicContentSize
-        return NSSize(width: NSView.noIntrinsicMetric, height: max(labelSize.height, 1))
+        NSSize(width: NSView.noIntrinsicMetric, height: max(textSize.height, 1))
     }
 
-    init(text: String, pane: DiffPane, font: NSFont) {
+    init(text: String, selectableText: String, pane: DiffPane, font: NSFont) {
         self.pane = pane
-        label = NSTextField(labelWithString: text.isEmpty ? " " : text)
+        let displayText = text.isEmpty ? " " : text
+        self.selectableText = selectableText
+        textSize = PaneTextClipView.measuredSize(for: displayText, font: font)
+        selectionOverlay = PaneSelectionOverlayView(frame: .zero)
+        textView = PaneTextView(frame: .zero)
         super.init(frame: .zero)
         identifier = NSUserInterfaceItemIdentifier("\(pane.identifier)TextClip")
         wantsLayer = true
         layer?.masksToBounds = true
-        label.identifier = NSUserInterfaceItemIdentifier("\(pane.identifier)Text")
-        label.font = font
-        label.lineBreakMode = .byClipping
-        addSubview(label)
+        selectionOverlay.identifier = NSUserInterfaceItemIdentifier("\(pane.identifier)SelectionOverlay")
+        selectionOverlay.isHidden = true
+        textView.identifier = NSUserInterfaceItemIdentifier("\(pane.identifier)Text")
+        textView.clipView = self
+        textView.string = displayText
+        textView.font = font
+        textView.textColor = .labelColor
+        textView.drawsBackground = false
+        textView.isEditable = false
+        textView.isSelectable = !selectableText.isEmpty
+        textView.selectedTextAttributes = PaneTextClipView.selectionAttributes
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.allowsUndo = false
+        textView.textContainerInset = .zero
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.widthTracksTextView = false
+        textView.textContainer?.heightTracksTextView = false
+        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                                       height: CGFloat.greatestFiniteMagnitude)
+        textView.isHorizontallyResizable = true
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = []
+        textView.focusRingType = .none
+        addSubview(selectionOverlay)
+        addSubview(textView)
         setContentHuggingPriority(.defaultLow, for: .horizontal)
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     }
@@ -113,23 +254,190 @@ private final class PaneTextClipView: NSView {
 
     override func layout() {
         super.layout()
-        let labelSize = label.intrinsicContentSize
-        let labelWidth = max(labelSize.width, bounds.width + textOffset)
-        let labelHeight = max(labelSize.height, bounds.height)
-        label.frame = NSRect(x: -textOffset, y: 0, width: labelWidth, height: labelHeight)
+        let textWidth = max(textSize.width, bounds.width + textOffset)
+        let textHeight = max(textSize.height, bounds.height)
+        let textFrame = NSRect(x: -textOffset, y: 0, width: textWidth, height: textHeight)
+        selectionOverlay.frame = textFrame
+        textView.frame = textFrame
+        updateSelectionPresentation()
     }
 
     override func scrollWheel(with event: NSEvent) {
         let deltaX = event.scrollingDeltaX
         if abs(deltaX) > abs(event.scrollingDeltaY), abs(deltaX) > 0 {
-            delegate?.paneTextClipView(self, didScrollHorizontallyBy: deltaX)
+            forwardHorizontalScroll(deltaX)
         } else {
             super.scrollWheel(with: event)
         }
     }
+
+    fileprivate func forwardHorizontalScroll(_ deltaX: CGFloat) {
+        delegate?.paneTextClipView(self, didScrollHorizontallyBy: deltaX)
+    }
+
+    fileprivate func beginSelection(with event: NSEvent) {
+        delegate?.paneTextClipView(self, didBeginSelectionAt: characterIndex(for: event.locationInWindow))
+    }
+
+    fileprivate func dragSelection(with event: NSEvent) {
+        delegate?.paneTextClipView(self, didDragSelectionTo: event.locationInWindow)
+    }
+
+    fileprivate func finishSelection() {
+        delegate?.paneTextClipViewDidFinishSelection(self)
+    }
+
+    fileprivate func useNativeSelection() {
+        delegate?.paneTextClipViewWillUseNativeSelection(self)
+    }
+
+    fileprivate func selectWord(with event: NSEvent) {
+        delegate?.paneTextClipViewWillUseNativeSelection(self)
+        guard textLength > 0 else { return }
+
+        let index = min(characterIndex(for: event.locationInWindow), max(textLength - 1, 0))
+        let proposedRange = NSRange(location: index, length: 0)
+        select(range: textView.selectionRange(forProposedRange: proposedRange, granularity: .selectByWord))
+    }
+
+    fileprivate func copySelectedTextToPasteboard() -> Bool {
+        delegate?.paneTextClipViewCopySelectedText(self) == true
+    }
+
+    fileprivate var textLength: Int {
+        (selectableText as NSString).length
+    }
+
+    fileprivate var hasSelectableText: Bool {
+        !selectableText.isEmpty
+    }
+
+    fileprivate var selectedRange: NSRange {
+        customSelectedRange
+    }
+
+    fileprivate func characterIndex(for windowPoint: NSPoint) -> Int {
+        guard let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer else {
+            return 0
+        }
+
+        layoutManager.ensureLayout(for: textContainer)
+        let pointInTextView = textView.convert(windowPoint, from: nil)
+        if pointInTextView.y <= textView.bounds.minY {
+            return 0
+        }
+        if pointInTextView.y >= textView.bounds.maxY {
+            return textLength
+        }
+
+        let containerOrigin = textView.textContainerOrigin
+        let containerPoint = NSPoint(x: pointInTextView.x - containerOrigin.x,
+                                     y: pointInTextView.y - containerOrigin.y)
+        var fraction: CGFloat = 0
+        let glyphIndex = layoutManager.glyphIndex(for: containerPoint,
+                                                  in: textContainer,
+                                                  fractionOfDistanceThroughGlyph: &fraction)
+        var characterIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+        if fraction > 0.5 {
+            characterIndex += 1
+        }
+        return min(max(characterIndex, 0), textLength)
+    }
+
+    fileprivate func select(range: NSRange) {
+        let location = min(max(range.location, 0), textLength)
+        let maxLength = textLength - location
+        let length = min(max(range.length, 0), maxLength)
+        customSelectedRange = NSRange(location: location, length: length)
+        updateSelectionPresentation()
+        textView.needsDisplay = true
+    }
+
+    fileprivate func clearSelection() {
+        select(range: NSRange(location: 0, length: 0))
+    }
+
+    fileprivate func selectedText() -> String? {
+        let range = selectedRange
+        guard range.length > 0,
+              let swiftRange = Range(range, in: selectableText) else {
+            return nil
+        }
+        return String(selectableText[swiftRange])
+    }
+
+    private func updateSelectionPresentation() {
+        guard let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer else {
+            selectionOverlay.selectedRects = []
+            return
+        }
+
+        let textViewRange = NSRange(location: 0, length: (textView.string as NSString).length)
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: textViewRange)
+
+        guard selectedRange.length > 0 else {
+            selectionOverlay.selectedRects = []
+            return
+        }
+
+        layoutManager.addTemporaryAttributes([.foregroundColor: NSColor.white],
+                                             forCharacterRange: selectedRange)
+        layoutManager.ensureLayout(for: textContainer)
+
+        let selectedGlyphRange = layoutManager.glyphRange(forCharacterRange: selectedRange,
+                                                          actualCharacterRange: nil)
+        let origin = textView.textContainerOrigin
+        var rects = [NSRect]()
+        let nsString = textView.string as NSString
+        layoutManager.enumerateLineFragments(forGlyphRange: selectedGlyphRange) { _, usedRect, _, lineGlyphRange, _ in
+            var lineCharacterRange = layoutManager.characterRange(forGlyphRange: lineGlyphRange,
+                                                                  actualGlyphRange: nil)
+            lineCharacterRange = NSIntersectionRange(lineCharacterRange, self.selectedRange)
+            while lineCharacterRange.length > 0 {
+                let character = nsString.character(at: lineCharacterRange.location + lineCharacterRange.length - 1)
+                guard character == 10 || character == 13 else { break }
+                lineCharacterRange.length -= 1
+            }
+
+            guard lineCharacterRange.length > 0 else { return }
+
+            let lineSelectedGlyphRange = layoutManager.glyphRange(forCharacterRange: lineCharacterRange,
+                                                                  actualCharacterRange: nil)
+            let glyphRect = layoutManager.boundingRect(forGlyphRange: lineSelectedGlyphRange,
+                                                       in: textContainer)
+            guard glyphRect.width > 0 else { return }
+
+            rects.append(NSRect(x: glyphRect.origin.x + origin.x,
+                                y: usedRect.origin.y + origin.y,
+                                width: glyphRect.width,
+                                height: usedRect.height).integral)
+        }
+        selectionOverlay.selectedRects = rects
+    }
+
+    private static func measuredSize(for text: String, font: NSFont) -> NSSize {
+        let lines = text.components(separatedBy: "\n")
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        let maxWidth = lines
+            .map { line in
+                let measuredLine = line.isEmpty ? " " : line
+                return (measuredLine as NSString).size(withAttributes: [.font: font]).width
+            }
+            .max() ?? 1
+        return NSSize(width: ceil(maxWidth) + 1,
+                      height: max(CGFloat(max(lines.count, 1)) * lineHeight, 1))
+    }
 }
 
 final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
+    private struct ActivePaneSelection {
+        let pane: DiffPane
+        let anchorClip: PaneTextClipView
+        let anchorIndex: Int
+    }
+
     private let paneTextFont = NSFont.monospacedSystemFont(ofSize: 12, weight: NSFont.Weight.regular)
     private let lineNumberFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
     private let pickButtonSlotWidth: CGFloat = 92
@@ -155,6 +463,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
     private var paneStates = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, PaneHorizontalState()) })
     private var paneTextClipViews = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, [PaneTextClipView]()) })
     private var sharedHorizontalValue: Double = 0
+    private var activePaneSelection: ActivePaneSelection?
 
     override func loadView() {
         AppLogger.info("Loading main view.")
@@ -366,7 +675,10 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
         }
 
         let text = display.lines.joined(separator: "\n")
-        let clip = PaneTextClipView(text: text, pane: pane, font: paneTextFont)
+        let clip = PaneTextClipView(text: text,
+                                    selectableText: selectableText(for: block, pane: pane, displayText: text),
+                                    pane: pane,
+                                    font: paneTextFont)
         clip.delegate = self
         clip.textOffset = paneStates[pane]?.offset ?? 0
         paneTextClipViews[pane, default: []].append(clip)
@@ -374,6 +686,13 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
 
         view.addArrangedSubview(content)
         return view
+    }
+
+    private func selectableText(for block: MDBlock, pane: DiffPane, displayText: String) -> String {
+        guard !(pane == .merged && block.kind == .changed && block.pick == .unpicked) else {
+            return ""
+        }
+        return displayText
     }
 
     private func identifier(for pane: DiffPane) -> String {
@@ -466,6 +785,148 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
         let maxOffset = sharedMaxOffset()
         guard maxOffset > 0 else { return }
         applySharedHorizontalValue(sharedHorizontalValue + Double(deltaX * horizontalWheelSensitivity / maxOffset))
+    }
+
+    fileprivate func paneTextClipView(_ clipView: PaneTextClipView, didBeginSelectionAt characterIndex: Int) {
+        clearSelections(in: clipView.pane, except: nil)
+        guard clipView.hasSelectableText else {
+            activePaneSelection = nil
+            return
+        }
+
+        activePaneSelection = ActivePaneSelection(pane: clipView.pane,
+                                                 anchorClip: clipView,
+                                                 anchorIndex: characterIndex)
+        updateActiveSelection(endingAt: clipView, characterIndex: characterIndex)
+    }
+
+    fileprivate func paneTextClipView(_ clipView: PaneTextClipView, didDragSelectionTo windowPoint: NSPoint) {
+        guard let activePaneSelection,
+              activePaneSelection.pane == clipView.pane,
+              let targetClip = targetClip(in: clipView.pane, for: windowPoint) else {
+            return
+        }
+
+        updateActiveSelection(endingAt: targetClip,
+                              characterIndex: targetClip.characterIndex(for: windowPoint))
+    }
+
+    fileprivate func paneTextClipViewDidFinishSelection(_ clipView: PaneTextClipView) {
+        if activePaneSelection?.pane == clipView.pane {
+            activePaneSelection = nil
+        }
+    }
+
+    fileprivate func paneTextClipViewWillUseNativeSelection(_ clipView: PaneTextClipView) {
+        activePaneSelection = nil
+        clearSelections(in: clipView.pane, except: clipView)
+    }
+
+    fileprivate func paneTextClipViewCopySelectedText(_ clipView: PaneTextClipView) -> Bool {
+        copySelectedTextToPasteboard(in: clipView.pane)
+    }
+
+    @objc func copy(_ sender: Any?) {
+        _ = copySelectedTextToPasteboard(in: nil)
+    }
+
+    private func copySelectedTextToPasteboard(in pane: DiffPane?) -> Bool {
+        let panes = pane.map { [$0] } ?? DiffPane.allCases
+        let selectedChunks = panes
+            .flatMap { paneTextClipViews[$0] ?? [] }
+            .compactMap { $0.selectedText() }
+        guard !selectedChunks.isEmpty else {
+            AppLogger.info("Copy requested with no selected pane text.")
+            return false
+        }
+
+        let pasteboard = NSPasteboard.general
+        let selectedText = selectedChunks.joined(separator: "\n")
+        pasteboard.clearContents()
+        let copied = pasteboard.setString(selectedText, forType: .string)
+            || pasteboard.writeObjects([selectedText as NSString])
+        if copied {
+            AppLogger.info("Copied selected pane text bytes=\(selectedText.utf8.count)")
+        } else {
+            AppLogger.error("Failed to write selected pane text to pasteboard.")
+        }
+        return copied
+    }
+
+    private func updateActiveSelection(endingAt targetClip: PaneTextClipView, characterIndex targetIndex: Int) {
+        guard let activePaneSelection,
+              activePaneSelection.pane == targetClip.pane,
+              let clips = paneTextClipViews[targetClip.pane],
+              let anchorClipIndex = clips.firstIndex(where: { $0 === activePaneSelection.anchorClip }),
+              let targetClipIndex = clips.firstIndex(where: { $0 === targetClip }) else {
+            return
+        }
+
+        if anchorClipIndex == targetClipIndex {
+            for (index, clip) in clips.enumerated() {
+                guard index == anchorClipIndex else {
+                    clip.clearSelection()
+                    continue
+                }
+                clip.select(range: range(from: activePaneSelection.anchorIndex, to: targetIndex))
+            }
+            return
+        }
+
+        let lowerIndex = min(anchorClipIndex, targetClipIndex)
+        let upperIndex = max(anchorClipIndex, targetClipIndex)
+        let isForwardSelection = anchorClipIndex < targetClipIndex
+
+        for (index, clip) in clips.enumerated() {
+            guard index >= lowerIndex && index <= upperIndex else {
+                clip.clearSelection()
+                continue
+            }
+
+            if isForwardSelection {
+                if index == anchorClipIndex {
+                    clip.select(range: range(from: activePaneSelection.anchorIndex, to: clip.textLength))
+                } else if index == targetClipIndex {
+                    clip.select(range: range(from: 0, to: targetIndex))
+                } else {
+                    clip.select(range: range(from: 0, to: clip.textLength))
+                }
+            } else {
+                if index == targetClipIndex {
+                    clip.select(range: range(from: targetIndex, to: clip.textLength))
+                } else if index == anchorClipIndex {
+                    clip.select(range: range(from: 0, to: activePaneSelection.anchorIndex))
+                } else {
+                    clip.select(range: range(from: 0, to: clip.textLength))
+                }
+            }
+        }
+    }
+
+    private func targetClip(in pane: DiffPane, for windowPoint: NSPoint) -> PaneTextClipView? {
+        let clips = (paneTextClipViews[pane] ?? []).filter(\.hasSelectableText)
+        if let containingClip = clips.first(where: { clip in
+            clip.bounds.contains(clip.convert(windowPoint, from: nil))
+        }) {
+            return containingClip
+        }
+
+        return clips.min { lhs, rhs in
+            let lhsY = lhs.convert(NSPoint(x: lhs.bounds.midX, y: lhs.bounds.midY), to: nil).y
+            let rhsY = rhs.convert(NSPoint(x: rhs.bounds.midX, y: rhs.bounds.midY), to: nil).y
+            return abs(lhsY - windowPoint.y) < abs(rhsY - windowPoint.y)
+        }
+    }
+
+    private func clearSelections(in pane: DiffPane, except keptClip: PaneTextClipView?) {
+        for clip in paneTextClipViews[pane] ?? [] where clip !== keptClip {
+            clip.clearSelection()
+        }
+    }
+
+    private func range(from start: Int, to end: Int) -> NSRange {
+        let location = min(start, end)
+        return NSRange(location: location, length: abs(end - start))
     }
 
     private func pickFile() -> URL? {

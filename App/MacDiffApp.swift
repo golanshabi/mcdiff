@@ -30,6 +30,8 @@ final class MacDiffApp: NSObject, NSApplicationDelegate {
             return
         }
 
+        configureMainMenu()
+
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1600, height: 950),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered,
@@ -50,6 +52,28 @@ final class MacDiffApp: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    private func configureMainMenu() {
+        let mainMenu = NSMenu()
+
+        let appMenuItem = NSMenuItem()
+        mainMenu.addItem(appMenuItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(title: "Quit mcdiff",
+                                   action: #selector(NSApplication.terminate(_:)),
+                                   keyEquivalent: "q"))
+        appMenuItem.submenu = appMenu
+
+        let editMenuItem = NSMenuItem()
+        mainMenu.addItem(editMenuItem)
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(NSMenuItem(title: "Copy",
+                                    action: #selector(NSText.copy(_:)),
+                                    keyEquivalent: "c"))
+        editMenuItem.submenu = editMenu
+
+        NSApp.mainMenu = mainMenu
     }
 
     private func sizeWindowForCurrentScreen() {
