@@ -26,8 +26,16 @@ private func buttons(in view: NSView) -> [NSButton] {
     allSubviews(of: view).compactMap { $0 as? NSButton }
 }
 
+private func sliders(in view: NSView) -> [NSSlider] {
+    allSubviews(of: view).compactMap { $0 as? NSSlider }
+}
+
 private func labels(in view: NSView) -> [NSTextField] {
     allSubviews(of: view).compactMap { $0 as? NSTextField }
+}
+
+private func views(in view: NSView, identifier: String) -> [NSView] {
+    allSubviews(of: view).filter { $0.identifier?.rawValue == identifier }
 }
 
 private func labels(in view: NSView, identifier: String) -> [NSTextField] {
@@ -66,10 +74,42 @@ private func stackViews(in view: NSView, identifier: String) -> [NSStackView] {
     stackViews(in: view).filter { $0.identifier?.rawValue == identifier }
 }
 
-private func lineCount(in row: NSStackView, identifier: String) -> Int {
-    labels(in: row, identifier: identifier)
-        .map { max($0.stringValue.components(separatedBy: "\n").count, 1) }
-        .max() ?? 1
+private func horizontalControl(in view: NSView, identifier: String) -> NSSlider? {
+    sliders(in: view).first { $0.identifier?.rawValue == identifier }
+}
+
+private func scrollView(in view: NSView, identifier: String) -> NSScrollView? {
+    allSubviews(of: view)
+        .compactMap { $0 as? NSScrollView }
+        .first { $0.identifier?.rawValue == identifier }
+}
+
+private func sendSliderAction(_ slider: NSSlider) {
+    guard let action = slider.action else {
+        assertTrue(false, "slider has an action")
+        return
+    }
+    _ = slider.sendAction(action, to: slider.target)
+}
+
+private func textLabelOrigins(in view: NSView, clipIdentifier: String) -> [CGFloat] {
+    views(in: view, identifier: clipIdentifier).compactMap { clip in
+        allSubviews(of: clip).compactMap { ($0 as? NSTextField)?.frame.origin.x }.first
+    }
+}
+
+private func paneWidths(in view: NSView, identifier: String) -> [CGFloat] {
+    stackViews(in: view, identifier: identifier).map(\.frame.width)
+}
+
+private func assertStableWidths(_ widths: [CGFloat], _ message: String) {
+    guard let first = widths.first else {
+        assertTrue(false, "\(message) has widths")
+        return
+    }
+    for width in widths {
+        assertTrue(abs(width - first) < 1.0, message)
+    }
 }
 
 private func window(for controller: MainWindowController) -> NSWindow {
@@ -310,7 +350,7 @@ private func testDeletionDiffRequiresExplicitPickAndUpdatesMergedPane() {
     assertTrue(textLines(in: controller.view, identifier: "mergedSide").contains("d"), "left pick keeps deleted line in merged pane")
 }
 
-private func testChangedRowsDoNotGetExtraHeightFromPickButtons() {
+private func testChangedRowsKeepStablePaneWidths() {
     let controller = MainWindowController()
     controller.loadView()
     let testWindow = window(for: controller)
@@ -321,19 +361,10 @@ private func testChangedRowsDoNotGetExtraHeightFromPickButtons() {
 
     let rows = stackViews(in: controller.view, identifier: "blockRow")
     assertTrue(rows.count >= 3, "fixture renders multiple block rows")
-
-    let heightsPerLine = rows.map { row in
-        row.layoutSubtreeIfNeeded()
-        return row.frame.height / CGFloat(lineCount(in: row, identifier: "leftSide"))
-    }
-    guard let first = heightsPerLine.first else {
-        assertTrue(false, "fixture has a first row")
-        return
-    }
-
-    for height in heightsPerLine.dropFirst() {
-        assertTrue(abs(height - first) < 3.0, "changed rows keep same line height density as equal rows")
-    }
+    assertStableWidths(paneWidths(in: controller.view, identifier: "leftSide"), "left pane widths are stable")
+    assertStableWidths(paneWidths(in: controller.view, identifier: "mergedSide"), "merged pane widths are stable")
+    assertStableWidths(paneWidths(in: controller.view, identifier: "rightSide"), "right pane widths are stable")
+    assertTrue(labels(in: controller.view).contains { !$0.frame.isEmpty && !$0.isHidden }, "rendered labels have visible frames")
 }
 
 private func testPickingOneBlockLeavesOtherMergedBlocksUnresolved() throws {
@@ -362,6 +393,82 @@ private func testPickingOneBlockLeavesOtherMergedBlocksUnresolved() throws {
     assertTrue(mergedText.contains("Unresolved"), "second unpicked block remains unresolved")
 }
 
+private func testLongLineSlidersMoveAllPanesTogetherWithoutChangingPaneWidths() throws {
+    let files = try temporaryDirectory("long-lines")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    let longLine = String(repeating: "This is a long sentence with many words. ", count: 12)
+    try "alpha\n\(longLine)\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nshort\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    assertTrue(scrollView(in: controller.view, identifier: "verticalScroll")?.hasHorizontalScroller == false,
+               "outer scroll view is vertical-only")
+
+    let leftWidthsBefore = paneWidths(in: controller.view, identifier: "leftSide")
+    let mergedWidthsBefore = paneWidths(in: controller.view, identifier: "mergedSide")
+    let rightWidthsBefore = paneWidths(in: controller.view, identifier: "rightSide")
+    assertStableWidths(leftWidthsBefore, "left pane widths start stable")
+    assertStableWidths(mergedWidthsBefore, "merged pane widths start stable")
+    assertStableWidths(rightWidthsBefore, "right pane widths start stable")
+
+    guard let leftScroller = horizontalControl(in: controller.view, identifier: "leftSideHorizontalScroller") else {
+        assertTrue(false, "left horizontal control exists")
+        return
+    }
+    guard let mergedScroller = horizontalControl(in: controller.view, identifier: "mergedSideHorizontalScroller") else {
+        assertTrue(false, "merged horizontal control exists")
+        return
+    }
+    guard let rightScroller = horizontalControl(in: controller.view, identifier: "rightSideHorizontalScroller") else {
+        assertTrue(false, "right horizontal control exists")
+        return
+    }
+    assertTrue(leftScroller.isEnabled, "left pane enables horizontal scrolling for long line")
+    assertTrue(mergedScroller.isEnabled, "merged pane shares horizontal scrolling for long line")
+    assertTrue(rightScroller.isEnabled, "right pane shares horizontal scrolling for long line")
+
+    leftScroller.doubleValue = 1
+    sendSliderAction(leftScroller)
+    layout(testWindow, controller)
+
+    let leftOriginsAfter = textLabelOrigins(in: controller.view, clipIdentifier: "leftSideTextClip")
+    let mergedOriginsAfter = textLabelOrigins(in: controller.view, clipIdentifier: "mergedSideTextClip")
+    let rightOriginsAfter = textLabelOrigins(in: controller.view, clipIdentifier: "rightSideTextClip")
+    assertTrue(!leftOriginsAfter.isEmpty, "left text clips exist")
+    assertTrue(!mergedOriginsAfter.isEmpty, "merged text clips exist")
+    assertTrue(!rightOriginsAfter.isEmpty, "right text clips exist")
+    assertTrue(leftOriginsAfter.allSatisfy { $0 < -1 }, "left slider moves every left row horizontally")
+    assertTrue(mergedOriginsAfter.allSatisfy { $0 < -1 }, "left slider also moves every merged row horizontally")
+    assertTrue(rightOriginsAfter.allSatisfy { $0 < -1 }, "left slider also moves every right row horizontally")
+    assertTrue(mergedScroller.doubleValue == leftScroller.doubleValue, "merged slider value follows left slider")
+    assertTrue(rightScroller.doubleValue == leftScroller.doubleValue, "right slider value follows left slider")
+    assertTrue(paneWidths(in: controller.view, identifier: "leftSide") == leftWidthsBefore,
+               "left pane visible widths remain constant after horizontal scroll")
+    assertTrue(paneWidths(in: controller.view, identifier: "mergedSide") == mergedWidthsBefore,
+               "merged pane visible widths remain constant after horizontal scroll")
+    assertTrue(paneWidths(in: controller.view, identifier: "rightSide") == rightWidthsBefore,
+               "right pane visible widths remain constant after horizontal scroll")
+
+    buttons(in: controller.view).first { $0.title == "Use Left" }?.performClick(nil)
+    layout(testWindow, controller)
+
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains(longLine),
+               "picking left updates merged pane to long content")
+    assertTrue(textLabelOrigins(in: controller.view, clipIdentifier: "leftSideTextClip").allSatisfy { $0 < -1 },
+               "left horizontal offset survives pick re-render")
+    assertTrue(textLabelOrigins(in: controller.view, clipIdentifier: "mergedSideTextClip").allSatisfy { $0 < -1 },
+               "merged horizontal offset survives pick re-render")
+    assertTrue(textLabelOrigins(in: controller.view, clipIdentifier: "rightSideTextClip").allSatisfy { $0 < -1 },
+               "right horizontal offset survives pick re-render")
+}
+
 @main
 private enum SwiftTests {
     static func main() {
@@ -372,8 +479,9 @@ private enum SwiftTests {
             try testMainWindowIdenticalFilesEnableSaveWithoutPick()
             try testMainWindowLoadsAndPicksDiff()
             testDeletionDiffRequiresExplicitPickAndUpdatesMergedPane()
-            testChangedRowsDoNotGetExtraHeightFromPickButtons()
+            testChangedRowsKeepStablePaneWidths()
             try testPickingOneBlockLeavesOtherMergedBlocksUnresolved()
+            try testLongLineSlidersMoveAllPanesTogetherWithoutChangingPaneWidths()
         } catch {
             fputs("Swift test failed: \(error.localizedDescription)\n", stderr)
             exit(1)
