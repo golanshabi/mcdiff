@@ -87,6 +87,15 @@ private final class PaneTextView: NSTextView {
             super.scrollWheel(with: event)
         }
     }
+
+    override func paste(_ sender: Any?) {
+        guard isEditable, let string = NSPasteboard.general.string(forType: .string) else {
+            super.paste(sender)
+            return
+        }
+
+        insertText(string, replacementRange: selectedRange())
+    }
 }
 
 struct PaneBackgroundRun {
@@ -145,10 +154,19 @@ private final class PaneTextClipView: NSView {
         NSSize(width: NSView.noIntrinsicMetric, height: max(textSize.height, 1))
     }
 
-    init(text: String, pane: DiffPane, font: NSFont, lineHeight: CGFloat) {
+    fileprivate var editableTextView: NSTextView {
+        textView
+    }
+
+    init(text: String,
+         pane: DiffPane,
+         font: NSFont,
+         lineHeight: CGFloat,
+         isEditable: Bool = false,
+         textDelegate: NSTextViewDelegate? = nil) {
         self.pane = pane
-        let displayText = text.isEmpty ? " " : text
-        textSize = PaneTextClipView.measuredSize(for: displayText, font: font, lineHeight: lineHeight)
+        let measuredText = text.isEmpty ? " " : text
+        textSize = PaneTextClipView.measuredSize(for: measuredText, font: font, lineHeight: lineHeight)
         textView = PaneTextView(frame: .zero)
         super.init(frame: .zero)
         identifier = NSUserInterfaceItemIdentifier("\(pane.identifier)TextClip")
@@ -156,17 +174,18 @@ private final class PaneTextClipView: NSView {
         layer?.masksToBounds = true
         textView.identifier = NSUserInterfaceItemIdentifier("\(pane.identifier)Text")
         textView.clipView = self
-        textView.textStorage?.setAttributedString(PaneTextClipView.attributedString(for: displayText,
+        textView.textStorage?.setAttributedString(PaneTextClipView.attributedString(for: text,
                                                                                     font: font,
                                                                                     lineHeight: lineHeight))
         textView.font = font
         textView.textColor = .labelColor
         textView.drawsBackground = false
-        textView.isEditable = false
+        textView.isEditable = isEditable
         textView.isSelectable = true
         textView.isRichText = false
         textView.importsGraphics = false
         textView.allowsUndo = false
+        textView.delegate = textDelegate
         textView.textContainerInset = .zero
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = false
@@ -232,7 +251,7 @@ private final class PaneTextClipView: NSView {
     }
 }
 
-final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
+final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NSTextViewDelegate {
     private struct PaneRenderContent {
         var textLines = [String]()
         var lineNumberLines = [String]()
@@ -247,7 +266,27 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
     private struct RenderPlan {
         var panes: [DiffPane: PaneRenderContent]
         var blockSlots: [BlockRenderSlot]
+        var mergedTextRanges: [MergedBlockTextRange]
         var totalRows: Int
+    }
+
+    private struct MergedBlockTextRange {
+        let blockIndex: Int
+        let characterRange: NSRange
+        let isEditable: Bool
+    }
+
+    private struct PendingMergedEdit {
+        let blockIndex: Int
+        let oldBlockRange: NSRange
+        let affectedRange: NSRange
+        let replacement: String
+    }
+
+    private struct PendingMergedSelection {
+        let blockIndex: Int
+        let relativeLocation: Int
+        let length: Int
     }
 
     private let paneTextFont = NSFont.monospacedSystemFont(ofSize: 12, weight: NSFont.Weight.regular)
@@ -274,6 +313,10 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
     private var paneScrollers = [DiffPane: PaneHorizontalSlider]()
     private var paneStates = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, PaneHorizontalState()) })
     private var paneTextClipViews = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, [PaneTextClipView]()) })
+    private weak var mergedTextView: NSTextView?
+    private var mergedTextRanges = [MergedBlockTextRange]()
+    private var pendingMergedEdit: PendingMergedEdit?
+    private var pendingMergedSelection: PendingMergedSelection?
     private var sharedHorizontalValue: Double = 0
 
     private var lineHeight: CGFloat {
@@ -365,6 +408,8 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
             } else {
                 AppLogger.info("Compare succeeded blocks=\(document?.blocks.count ?? 0)")
             }
+            pendingMergedEdit = nil
+            pendingMergedSelection = nil
             resetHorizontalOffsets()
             render(preservingVerticalPosition: false)
         } catch {
@@ -396,6 +441,8 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
         let previousVisibleOrigin = scroll.contentView.bounds.origin
         updatePaneContentWidths()
         paneTextClipViews = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, [PaneTextClipView]()) })
+        mergedTextView = nil
+        mergedTextRanges = []
         stack.arrangedSubviews.forEach {
             stack.removeArrangedSubview($0)
             $0.removeFromSuperview()
@@ -404,12 +451,14 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
         // Blocks are rendered from the mutable bridge objects, so choosing a
         // side can update the model and redraw without rebuilding the diff.
         let plan = renderPlan(for: document)
+        mergedTextRanges = plan.mergedTextRanges
         stack.addArrangedSubview(diffTableView(for: plan))
         refreshPaneViewportWidths()
         if preservingVerticalPosition {
             scroll.contentView.scroll(to: NSPoint(x: 0, y: previousVisibleOrigin.y))
             scroll.reflectScrolledClipView(scroll.contentView)
         }
+        restorePendingMergedSelection()
     }
 
     private func diffTableView(for plan: RenderPlan) -> NSView {
@@ -509,10 +558,15 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
         let clip = PaneTextClipView(text: text,
                                     pane: pane,
                                     font: paneTextFont,
-                                    lineHeight: lineHeight)
+                                    lineHeight: lineHeight,
+                                    isEditable: pane == .merged,
+                                    textDelegate: pane == .merged ? self : nil)
         clip.delegate = self
         clip.textOffset = paneStates[pane]?.offset ?? 0
         paneTextClipViews[pane, default: []].append(clip)
+        if pane == .merged {
+            mergedTextView = clip.editableTextView
+        }
         layout.addArrangedSubview(clip)
 
         return view
@@ -521,10 +575,13 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
     private func renderPlan(for document: MDDocument) -> RenderPlan {
         var panes = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, PaneRenderContent()) })
         var slots = [BlockRenderSlot]()
+        var mergedRanges = [MergedBlockTextRange]()
         var totalRows = 0
         var mergedStartLine = 1
+        var mergedCharacterLocation = 0
+        var mergedHasPreviousLine = false
 
-        for block in document.blocks {
+        for (blockIndex, block) in document.blocks.enumerated() {
             let displayed = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map {
                 ($0, displayedLines(for: block, pane: $0, mergedStartLine: mergedStartLine))
             })
@@ -533,11 +590,29 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
             for pane in DiffPane.allCases {
                 guard let display = displayed[pane] else { continue }
                 var lines = display.lines
+                if pane == .merged {
+                    lines = mergedContentLines(for: block, lines: lines)
+                }
                 if lines.count > rowCount {
                     lines = Array(lines.prefix(rowCount))
                 }
                 if lines.count < rowCount {
                     lines.append(contentsOf: Array(repeating: "", count: rowCount - lines.count))
+                }
+                if pane == .merged {
+                    let rangeStart = mergedCharacterLocation + (mergedHasPreviousLine ? 1 : 0)
+                    let rangeLines = block.kind == .changed ? lines : Array(lines.prefix(display.lines.count))
+                    mergedRanges.append(MergedBlockTextRange(blockIndex: blockIndex,
+                                                             characterRange: NSRange(location: rangeStart,
+                                                                                     length: characterLength(for: rangeLines)),
+                                                             isEditable: block.kind == .changed))
+                    if !lines.isEmpty {
+                        if mergedHasPreviousLine {
+                            mergedCharacterLocation += 1
+                        }
+                        mergedCharacterLocation += characterLength(for: lines)
+                        mergedHasPreviousLine = true
+                    }
                 }
                 panes[pane]?.textLines.append(contentsOf: lines)
                 if pane != .merged {
@@ -567,27 +642,26 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
             totalRows = 1
         }
 
-        return RenderPlan(panes: panes, blockSlots: slots, totalRows: totalRows)
+        return RenderPlan(panes: panes, blockSlots: slots, mergedTextRanges: mergedRanges, totalRows: totalRows)
+    }
+
+    private func mergedContentLines(for block: MDBlock, lines: [String]) -> [String] {
+        if block.kind == .changed && lines.isEmpty {
+            return [""]
+        }
+        return lines
+    }
+
+    private func characterLength(for lines: [String]) -> Int {
+        guard let first = lines.first else { return 0 }
+        return lines.dropFirst().reduce((first as NSString).length) { length, line in
+            length + 1 + (line as NSString).length
+        }
     }
 
     private func renderRowCount(for block: MDBlock,
                                 displayed: [DiffPane: (lines: [String], start: Int?)]) -> Int {
-        guard block.kind == .changed else {
-            return max(displayed.values.map(\.lines.count).max() ?? 0, 1)
-        }
-
-        switch block.pick {
-            case .unpicked:
-                return max(displayed[.left]?.lines.count ?? 0,
-                           displayed[.right]?.lines.count ?? 0,
-                           1)
-            case .left, .right:
-                return max(displayed[.merged]?.lines.count ?? 0, 1)
-            @unknown default:
-                return max(displayed[.left]?.lines.count ?? 0,
-                           displayed[.right]?.lines.count ?? 0,
-                           1)
-        }
+        max(displayed.values.map(\.lines.count).max() ?? 0, 1)
     }
 
     private func identifier(for pane: DiffPane) -> String {
@@ -601,7 +675,13 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
             case .left:
                 return block.pick == .left ? NSColor.systemBlue.withAlphaComponent(0.22) : NSColor.systemRed.withAlphaComponent(0.16)
             case .merged:
-                return block.pick == .unpicked ? NSColor.systemOrange.withAlphaComponent(0.16) : nil
+                if block.pick == .unpicked {
+                    return NSColor.systemOrange.withAlphaComponent(0.16)
+                }
+                if block.pick == .manual {
+                    return NSColor.systemPurple.withAlphaComponent(0.14)
+                }
+                return nil
             case .right:
                 return block.pick == .right ? NSColor.systemBlue.withAlphaComponent(0.22) : NSColor.systemGreen.withAlphaComponent(0.16)
         }
@@ -651,6 +731,8 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
                 return (block.leftLines ?? [], start)
             case .right:
                 return (block.rightLines ?? [], start)
+            case .manual:
+                return (block.manualLines ?? [], start)
             case .unpicked:
                 return ([], nil)
             @unknown default:
@@ -668,6 +750,8 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
                 return block.leftLines?.count ?? 0
             case .right:
                 return block.rightLines?.count ?? 0
+            case .manual:
+                return block.manualLines?.count ?? 0
             case .unpicked:
                 return 0
             @unknown default:
@@ -678,6 +762,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
     @objc private func pick(_ sender: PickButton) {
         guard let block = sender.block else { return }
         block.pick = sender.picksLeft ? .left : .right
+        block.manualLines = []
         AppLogger.info("Picked \(sender.picksLeft ? "left" : "right") for changed block left_start=\(block.leftStartLine) right_start=\(block.rightStartLine)")
         render(preservingVerticalPosition: true)
         updateButtons()
@@ -691,6 +776,113 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
         let maxOffset = sharedMaxOffset()
         guard maxOffset > 0 else { return }
         applySharedHorizontalValue(sharedHorizontalValue + Double(deltaX * horizontalWheelSensitivity / maxOffset))
+    }
+
+    func textView(_ textView: NSTextView,
+                  shouldChangeTextIn affectedCharRange: NSRange,
+                  replacementString: String?) -> Bool {
+        guard textView === mergedTextView else { return true }
+        guard let range = mergedTextRange(containing: affectedCharRange), range.isEditable else {
+            NSSound.beep()
+            return false
+        }
+
+        pendingMergedEdit = PendingMergedEdit(blockIndex: range.blockIndex,
+                                              oldBlockRange: range.characterRange,
+                                              affectedRange: affectedCharRange,
+                                              replacement: replacementString ?? "")
+        return true
+    }
+
+    func textDidChange(_ notification: Notification) {
+        guard let textView = notification.object as? NSTextView,
+              textView === mergedTextView,
+              let edit = pendingMergedEdit else { return }
+        pendingMergedEdit = nil
+
+        guard let document, edit.blockIndex < document.blocks.count else {
+            updateButtons()
+            return
+        }
+
+        let replacementLength = (edit.replacement as NSString).length
+        let newBlockLength = max(edit.oldBlockRange.length + replacementLength - edit.affectedRange.length, 0)
+        let newBlockRange = NSRange(location: edit.oldBlockRange.location, length: newBlockLength)
+        let text = textView.string as NSString
+        guard NSMaxRange(newBlockRange) <= text.length else {
+            updateButtons()
+            return
+        }
+
+        let block = document.blocks[edit.blockIndex]
+        let editedText = text.substring(with: newBlockRange)
+        normalize(block: block, editedLines: lines(fromEditedMergedText: editedText))
+        preserveSelection(from: textView, blockIndex: edit.blockIndex, blockRange: newBlockRange)
+        AppLogger.info("Manually edited changed block left_start=\(block.leftStartLine) right_start=\(block.rightStartLine) pick=\(block.pick.rawValue)")
+        render(preservingVerticalPosition: true)
+        updateButtons()
+    }
+
+    private func mergedTextRange(containing affectedRange: NSRange) -> MergedBlockTextRange? {
+        mergedTextRanges.first { range in
+            range.isEditable && contains(affectedRange, in: range.characterRange)
+        }
+    }
+
+    private func contains(_ affectedRange: NSRange, in allowedRange: NSRange) -> Bool {
+        let affectedEnd = NSMaxRange(affectedRange)
+        let allowedEnd = NSMaxRange(allowedRange)
+        if affectedRange.length == 0 {
+            return affectedRange.location >= allowedRange.location && affectedRange.location <= allowedEnd
+        }
+        return affectedRange.location >= allowedRange.location && affectedEnd <= allowedEnd
+    }
+
+    private func normalize(block: MDBlock, editedLines: [String]) {
+        let leftLines = block.leftLines ?? []
+        let rightLines = block.rightLines ?? []
+        if editedLines == leftLines {
+            block.pick = .left
+            block.manualLines = []
+        } else if editedLines == rightLines {
+            block.pick = .right
+            block.manualLines = []
+        } else {
+            block.pick = .manual
+            block.manualLines = editedLines
+        }
+    }
+
+    private func lines(fromEditedMergedText text: String) -> [String] {
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        guard !normalized.isEmpty else { return [] }
+
+        return normalized.components(separatedBy: "\n")
+    }
+
+    private func preserveSelection(from textView: NSTextView, blockIndex: Int, blockRange: NSRange) {
+        let selection = textView.selectedRange()
+        let relativeLocation = min(max(selection.location - blockRange.location, 0), blockRange.length)
+        let length = min(selection.length, max(blockRange.length - relativeLocation, 0))
+        pendingMergedSelection = PendingMergedSelection(blockIndex: blockIndex,
+                                                        relativeLocation: relativeLocation,
+                                                        length: length)
+    }
+
+    private func restorePendingMergedSelection() {
+        guard let selection = pendingMergedSelection else { return }
+        pendingMergedSelection = nil
+        guard let textView = mergedTextView,
+              let range = mergedTextRanges.first(where: { $0.blockIndex == selection.blockIndex }) else { return }
+
+        let relativeLocation = min(selection.relativeLocation, range.characterRange.length)
+        let length = min(selection.length, max(range.characterRange.length - relativeLocation, 0))
+        let restored = NSRange(location: range.characterRange.location + relativeLocation, length: length)
+        view.window?.makeFirstResponder(textView)
+        textView.setSelectedRange(restored)
+        textView.scrollRangeToVisible(restored)
     }
 
     private func pickFile() -> URL? {
@@ -784,6 +976,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate {
                 var lines = [String]()
                 lines.append(contentsOf: block.leftLines ?? [])
                 lines.append(contentsOf: block.rightLines ?? [])
+                lines.append(contentsOf: block.manualLines ?? [])
                 return lines
         }
     }

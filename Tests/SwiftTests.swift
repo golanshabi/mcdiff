@@ -111,6 +111,23 @@ private func sendSliderAction(_ slider: NSSlider) {
     _ = slider.sendAction(action, to: slider.target)
 }
 
+private func replaceText(in textView: NSTextView,
+                         range: NSRange,
+                         with replacement: String,
+                         shouldAllow: Bool = true,
+                         _ message: String) {
+    let allowed = textView.shouldChangeText(in: range, replacementString: replacement)
+    assertTrue(allowed == shouldAllow, message)
+    guard allowed else { return }
+    textView.textStorage?.replaceCharacters(in: range, with: replacement)
+    textView.didChangeText()
+}
+
+private func nsRange(of needle: String, in text: String) -> NSRange? {
+    guard let range = text.range(of: needle) else { return nil }
+    return NSRange(range, in: text)
+}
+
 private func textLabelOrigins(in view: NSView, clipIdentifier: String) -> [CGFloat] {
     views(in: view, identifier: clipIdentifier).compactMap { clip in
         allSubviews(of: clip).compactMap { ($0 as? NSTextView)?.frame.origin.x }.first
@@ -246,6 +263,16 @@ private func testBridgeDiffMergeAndErrors() throws {
 
     let merged = try document.mergedText()
     assertTrue(merged == "one\nright\nthree\n", "bridge merge after pick output")
+
+    changedBlock.pick = .manual
+    changedBlock.manualLines = ["manual", "merged"]
+    assertTrue(document.canSave(), "bridge document can save after manual edit")
+    let manualMerged = try document.mergedText()
+    assertTrue(manualMerged == "one\nmanual\nmerged\nthree\n", "bridge merge after manual edit output")
+
+    changedBlock.manualLines = []
+    let emptyManualMerged = try document.mergedText()
+    assertTrue(emptyManualMerged == "one\nthree\n", "bridge merge after empty manual edit output")
 
     guard let testLogDirectory else {
         assertTrue(false, "test log directory is available")
@@ -396,7 +423,7 @@ private func testChangedRowsKeepStablePaneWidths() {
     assertTrue(labels(in: controller.view).contains { !$0.frame.isEmpty && !$0.isHidden }, "rendered labels have visible frames")
 }
 
-private func testPaneTextIsSelectableAndReadOnly() throws {
+private func testPaneTextIsSelectableAndMergedPaneEditable() throws {
     let files = try temporaryDirectory("selectable-text")
     let left = files.appendingPathComponent("left.txt")
     let right = files.appendingPathComponent("right.txt")
@@ -410,7 +437,7 @@ private func testPaneTextIsSelectableAndReadOnly() throws {
     controller.load(left: left, right: right)
     layout(testWindow, controller)
 
-    for identifier in ["leftSide", "mergedSide", "rightSide"] {
+    for identifier in ["leftSide", "rightSide"] {
         let paneTextViews = textViews(in: controller.view, identifier: identifier)
         assertTrue(paneTextViews.count == 1, "\(identifier) renders one native text view")
         assertTrue(paneTextViews.allSatisfy { !$0.isEditable }, "\(identifier) text is read-only")
@@ -421,6 +448,16 @@ private func testPaneTextIsSelectableAndReadOnly() throws {
         assertTrue(views(in: controller.view, identifier: "\(identifier)SelectionOverlay").isEmpty,
                    "\(identifier) does not render custom selection overlays")
     }
+
+    let mergedTextViews = textViews(in: controller.view, identifier: "mergedSide")
+    assertTrue(mergedTextViews.count == 1, "mergedSide renders one native text view")
+    assertTrue(mergedTextViews.allSatisfy(\.isEditable), "mergedSide text is editable")
+    assertTrue(mergedTextViews.allSatisfy { !$0.drawsBackground }, "mergedSide text keeps pane background visible")
+    assertTrue(mergedTextViews.allSatisfy { $0.textContainer?.widthTracksTextView == false },
+               "mergedSide text does not wrap")
+    assertTrue(mergedTextViews.allSatisfy(\.isSelectable), "mergedSide uses native selection")
+    assertTrue(views(in: controller.view, identifier: "mergedSideSelectionOverlay").isEmpty,
+               "mergedSide does not render custom selection overlays")
 
     assertTrue(text(in: controller.view, identifier: "leftSide").contains("left words"),
                "left pane text remains discoverable")
@@ -447,6 +484,7 @@ private func testMergedPaneTextBecomesSelectableAfterPick() throws {
     let unpicked = textViews(in: controller.view, identifier: "mergedSide").first
     assertTrue(unpicked?.string.contains("Unresolved") == false, "unpicked merged pane has no placeholder text")
     assertTrue(unpicked?.isSelectable == true, "merged pane uses native selection before pick")
+    assertTrue(unpicked?.isEditable == true, "merged pane is editable before pick")
 
     buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
     layout(testWindow, controller)
@@ -455,6 +493,248 @@ private func testMergedPaneTextBecomesSelectableAfterPick() throws {
     assertTrue(picked?.string.contains("right words") == true, "picked merged text appears in the native text view")
     assertTrue(picked?.string.contains("Unresolved") == false, "picked merged text remains placeholder-free")
     assertTrue(picked?.isSelectable == true, "picked merged text remains selectable")
+    assertTrue(picked?.isEditable == true, "picked merged text remains editable")
+}
+
+private func testManualMergedEditEnablesSaveAndShowsManualText() throws {
+    let files = try temporaryDirectory("manual-merged-edit")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists")
+        return
+    }
+
+    let insertion = ("alpha\n" as NSString).length
+    replaceText(in: merged,
+                range: NSRange(location: insertion, length: 0),
+                with: "manual",
+                "manual edit is accepted inside the changed block")
+    layout(testWindow, controller)
+
+    let save = buttons(in: controller.view).first { $0.title == "Save Result" }
+    assertTrue(save?.isEnabled == true, "manual edit resolves the only changed block")
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("manual"), "manual text appears in merged pane")
+    assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "mergedSide"), redAtLeast: 0.4, blueAtLeast: 0.4),
+               "manual merged block uses a distinct middle-pane color")
+}
+
+private func testManualMergedEditNormalizesToRightPick() throws {
+    let files = try temporaryDirectory("manual-normalizes-right")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists")
+        return
+    }
+
+    let insertion = ("alpha\n" as NSString).length
+    replaceText(in: merged,
+                range: NSRange(location: insertion, length: 0),
+                with: "right",
+                "typing the right block text is accepted")
+    layout(testWindow, controller)
+
+    let save = buttons(in: controller.view).first { $0.title == "Save Result" }
+    assertTrue(save?.isEnabled == true, "typing the right side resolves the changed block")
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("right"), "right text appears in merged pane")
+    assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "rightSide"), blueAtLeast: 0.7),
+               "typing the right side normalizes to the same state as Use Right")
+}
+
+private func testManualMergedEditCanBreakLineAtEndOfChangedLine() throws {
+    let files = try temporaryDirectory("manual-break-end")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists")
+        return
+    }
+
+    let insertion = ("alpha\n" as NSString).length
+    replaceText(in: merged,
+                range: NSRange(location: insertion, length: 0),
+                with: "manual",
+                "manual edit is accepted before breaking the line")
+    layout(testWindow, controller)
+
+    guard let edited = textViews(in: controller.view, identifier: "mergedSide").first,
+          let manualRange = nsRange(of: "manual", in: edited.string) else {
+        assertTrue(false, "manual text is rendered before line break")
+        return
+    }
+    replaceText(in: edited,
+                range: NSRange(location: NSMaxRange(manualRange), length: 0),
+                with: "\n",
+                "line break is accepted at the end of the changed line")
+    layout(testWindow, controller)
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["alpha", "manual", "", "omega"],
+               "line break at the end creates a real blank manual line")
+}
+
+private func testAllBlankRowsInDeletionBlockAreEditable() throws {
+    let files = try temporaryDirectory("blank-deletion-rows-editable")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "one\ntwo\nthree\n".write(to: left, atomically: true, encoding: .utf8)
+    try "".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists")
+        return
+    }
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["", "", ""],
+               "deletion block reserves every merged row as editable empty text")
+    replaceText(in: merged,
+                range: NSRange(location: merged.string.count, length: 0),
+                with: "last",
+                "editing the last empty row in the changed block is accepted")
+    layout(testWindow, controller)
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["", "", "last"],
+               "last empty row in the changed block can receive text")
+    let save = buttons(in: controller.view).first { $0.title == "Save Result" }
+    assertTrue(save?.isEnabled == true, "editing an empty row resolves the deletion block")
+}
+
+private func testMergedPaneAcceptsMultiLinePasteText() throws {
+    let files = try temporaryDirectory("paste-text")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists")
+        return
+    }
+
+    replaceText(in: merged,
+                range: NSRange(location: ("alpha\n" as NSString).length, length: 0),
+                with: "pasted\ntext",
+                "multi-line paste text is accepted in the changed block")
+    layout(testWindow, controller)
+
+    let mergedText = text(in: controller.view, identifier: "mergedSide")
+    assertTrue(mergedText.contains("pasted"), "paste inserts text into the merged pane")
+    assertTrue(mergedText.contains("text"), "paste supports multi-line text")
+}
+
+private func testMergedEditRejectsEqualRows() throws {
+    let files = try temporaryDirectory("manual-rejects-equal")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first,
+          let alphaRange = nsRange(of: "alpha", in: merged.string) else {
+        assertTrue(false, "merged pane renders equal alpha text")
+        return
+    }
+
+    replaceText(in: merged,
+                range: alphaRange,
+                with: "changed",
+                shouldAllow: false,
+                "equal rows reject editing in the first implementation")
+    assertTrue(merged.string.contains("alpha"), "rejected equal-row edit leaves text unchanged")
+}
+
+private func testDeletingManualMergedTextLeavesResolvedEmptyBlock() throws {
+    let files = try temporaryDirectory("manual-delete-empty")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let unpicked = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists")
+        return
+    }
+
+    let insertion = ("alpha\n" as NSString).length
+    replaceText(in: unpicked,
+                range: NSRange(location: insertion, length: 0),
+                with: "manual",
+                "manual edit is accepted before deleting it")
+    layout(testWindow, controller)
+
+    guard let edited = textViews(in: controller.view, identifier: "mergedSide").first,
+          let manualRange = nsRange(of: "manual", in: edited.string) else {
+        assertTrue(false, "manual text is rendered before deletion")
+        return
+    }
+    replaceText(in: edited,
+                range: manualRange,
+                with: "",
+                "deleting all manual text is accepted")
+    layout(testWindow, controller)
+
+    let save = buttons(in: controller.view).first { $0.title == "Save Result" }
+    assertTrue(save?.isEnabled == true, "empty manual edit still resolves the changed block")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("manual"),
+               "manual text is removed from the merged pane")
 }
 
 private func testPaneUsesOneNativeSelectionAcrossMultipleTextBlocks() throws {
@@ -548,8 +828,8 @@ private func testPickingOneBlockLeavesOtherMergedBlocksBlankAndUnsaved() throws 
     assertTrue(save?.isEnabled == false, "second unpicked block keeps save disabled")
 }
 
-private func testPickingSmallerConflictSqueezesMergedRows() throws {
-    let files = try temporaryDirectory("smaller-pick-squeezes")
+private func testPickingSmallerConflictKeepsLeftAndRightRowsVisible() throws {
+    let files = try temporaryDirectory("smaller-pick-keeps-sides")
     let left = files.appendingPathComponent("left.txt")
     let right = files.appendingPathComponent("right.txt")
     try "same\nleft one\nleft two\nleft three\ntail\n".write(to: left, atomically: true, encoding: .utf8)
@@ -568,12 +848,12 @@ private func testPickingSmallerConflictSqueezesMergedRows() throws {
     buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
     layout(testWindow, controller)
 
-    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["same", "right one", "tail"],
-               "picking the smaller side removes the extra merged rows")
-    assertTrue(textLines(in: controller.view, identifier: "leftSide").count == 3,
-               "all panes squeeze to the picked merged row count")
-    assertTrue(textLines(in: controller.view, identifier: "rightSide").count == 3,
-               "right pane stays aligned after the squeeze")
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["same", "right one", "", "", "tail"],
+               "picking the smaller side keeps changed block rows visible")
+    assertTrue(textLines(in: controller.view, identifier: "leftSide") == ["same", "left one", "left two", "left three", "tail"],
+               "picking right does not remove the longer left side from view")
+    assertTrue(textLines(in: controller.view, identifier: "rightSide") == ["same", "right one", "", "", "tail"],
+               "right pane stays aligned with the full changed block")
 }
 
 private func testLongLineSlidersMoveAllPanesTogetherWithoutChangingPaneWidths() throws {
@@ -663,12 +943,19 @@ private enum SwiftTests {
             try testMainWindowLoadsAndPicksDiff()
             testDeletionDiffRequiresExplicitPickAndUpdatesMergedPane()
             testChangedRowsKeepStablePaneWidths()
-            try testPaneTextIsSelectableAndReadOnly()
+            try testPaneTextIsSelectableAndMergedPaneEditable()
             try testMergedPaneTextBecomesSelectableAfterPick()
+            try testManualMergedEditEnablesSaveAndShowsManualText()
+            try testManualMergedEditNormalizesToRightPick()
+            try testManualMergedEditCanBreakLineAtEndOfChangedLine()
+            try testAllBlankRowsInDeletionBlockAreEditable()
+            try testMergedPaneAcceptsMultiLinePasteText()
+            try testMergedEditRejectsEqualRows()
+            try testDeletingManualMergedTextLeavesResolvedEmptyBlock()
             try testPaneUsesOneNativeSelectionAcrossMultipleTextBlocks()
             try testNativeTextSelectionKeepsPartialWordRange()
             try testPickingOneBlockLeavesOtherMergedBlocksBlankAndUnsaved()
-            try testPickingSmallerConflictSqueezesMergedRows()
+            try testPickingSmallerConflictKeepsLeftAndRightRowsVisible()
             try testLongLineSlidersMoveAllPanesTogetherWithoutChangingPaneWidths()
         } catch {
             fputs("Swift test failed: \(error.localizedDescription)\n", stderr)

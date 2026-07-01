@@ -229,6 +229,19 @@ void testInvalidBlocksAndPickValidation() {
     pickedInsertion.blocks.push_back(changedBlock({}, {"new"}, PickSide::Right));
     expect(macdiff::canMerge(pickedInsertion), "picked insertion can merge");
     expect(macdiff::mergeText(pickedInsertion) == "new\n", "picked insertion merge output");
+
+    DiffDocument manual;
+    auto manualBlock = changedBlock({"left"}, {"right"}, PickSide::Manual);
+    manualBlock.manualLines = {"custom", "merged"};
+    manual.blocks.push_back(manualBlock);
+    expect(macdiff::canMerge(manual), "manual changed block can merge");
+    expect(macdiff::mergeText(manual) == "custom\nmerged\n", "manual changed block merge output");
+
+    DiffDocument emptyManual;
+    auto emptyManualBlock = changedBlock({"left"}, {"right"}, PickSide::Manual);
+    emptyManual.blocks.push_back(emptyManualBlock);
+    expect(macdiff::canMerge(emptyManual), "empty manual changed block can merge");
+    expect(macdiff::mergeText(emptyManual).empty(), "empty manual changed block merge output");
 }
 
 }

@@ -7,6 +7,24 @@
 @implementation MDBlock
 @end
 
+namespace {
+
+macdiff::PickSide corePickSide(MDPickSide pick) {
+    switch (pick) {
+        case MDPickSideLeft:
+            return macdiff::PickSide::Left;
+        case MDPickSideRight:
+            return macdiff::PickSide::Right;
+        case MDPickSideManual:
+            return macdiff::PickSide::Manual;
+        case MDPickSideUnpicked:
+        default:
+            return macdiff::PickSide::Unpicked;
+    }
+}
+
+}
+
 @implementation MDDocument
 
 - (BOOL)canSave {
@@ -26,9 +44,10 @@
         core.kind = block.kind == MDBlockKindEqual ? macdiff::DiffBlockKind::Equal : macdiff::DiffBlockKind::Changed;
         core.leftStartLine = static_cast<macdiff::LineNumber>(block.leftStartLine);
         core.rightStartLine = static_cast<macdiff::LineNumber>(block.rightStartLine);
-        core.pick = block.pick == MDPickSideLeft ? macdiff::PickSide::Left : block.pick == MDPickSideRight ? macdiff::PickSide::Right : macdiff::PickSide::Unpicked;
+        core.pick = corePickSide(block.pick);
         for (NSString *line in block.leftLines) core.leftLines.push_back(line.UTF8String ?: "");
         for (NSString *line in block.rightLines) core.rightLines.push_back(line.UTF8String ?: "");
+        for (NSString *line in block.manualLines) core.manualLines.push_back(line.UTF8String ?: "");
         doc.blocks.push_back(core);
     }
 
@@ -64,6 +83,7 @@ extern "C" MDDocument *MDMakeDiff(NSString *leftText, NSString *rightText, NSErr
             item.leftStartLine = static_cast<NSInteger>(block.leftStartLine);
             item.rightStartLine = static_cast<NSInteger>(block.rightStartLine);
             item.pick = MDPickSideUnpicked;
+            item.manualLines = @[];
 
             NSMutableArray<NSString *> *left = [NSMutableArray array];
             NSMutableArray<NSString *> *right = [NSMutableArray array];

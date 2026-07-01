@@ -19,7 +19,10 @@ bool canMerge(const DiffDocument& doc) {
             MCD_LOG_ERROR("Merge readiness failed: invalid block.");
             return false;
         }
-        if (block.kind == DiffBlockKind::Changed && block.pick != PickSide::Left && block.pick != PickSide::Right) {
+        if (block.kind == DiffBlockKind::Changed &&
+            block.pick != PickSide::Left &&
+            block.pick != PickSide::Right &&
+            block.pick != PickSide::Manual) {
             MCD_LOG_INFO("Merge readiness failed: changed block is unpicked.");
             return false;
         }
@@ -41,6 +44,8 @@ std::string mergeText(const DiffDocument& doc) {
                     append(output, block.leftLines);
                 } else if (block.pick == PickSide::Right) {
                     append(output, block.rightLines);
+                } else if (block.pick == PickSide::Manual) {
+                    append(output, block.manualLines);
                 } else {
                     // The Objective-C bridge converts this exception into an
                     // NSError so the app can show a recoverable save failure.
