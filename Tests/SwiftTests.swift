@@ -116,11 +116,23 @@ private func replaceText(in textView: NSTextView,
                          with replacement: String,
                          shouldAllow: Bool = true,
                          _ message: String) {
+    textView.setSelectedRange(range)
     let allowed = textView.shouldChangeText(in: range, replacementString: replacement)
     assertTrue(allowed == shouldAllow, message)
     guard allowed else { return }
     textView.textStorage?.replaceCharacters(in: range, with: replacement)
+    textView.setSelectedRange(NSRange(location: range.location + (replacement as NSString).length, length: 0))
     textView.didChangeText()
+}
+
+private func undoMergedText(in controller: MainWindowController, _ message: String) {
+    assertTrue(!textViews(in: controller.view, identifier: "mergedSide").isEmpty, message)
+    controller.undo(nil)
+}
+
+private func redoMergedText(in controller: MainWindowController, _ message: String) {
+    assertTrue(!textViews(in: controller.view, identifier: "mergedSide").isEmpty, message)
+    controller.redo(nil)
 }
 
 private func nsRange(of needle: String, in text: String) -> NSRange? {
@@ -496,6 +508,45 @@ private func testMergedPaneTextBecomesSelectableAfterPick() throws {
     assertTrue(picked?.isEditable == true, "picked merged text remains editable")
 }
 
+private func testSidePickUndoRedoRestoresMergedState() throws {
+    let files = try temporaryDirectory("pick-undo-redo")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    layout(testWindow, controller)
+
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("right"),
+               "right pick appears before undo")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save Result" }?.isEnabled == true,
+               "right pick enables save before undo")
+
+    undoMergedText(in: controller, "merged text view exists for pick undo")
+    layout(testWindow, controller)
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["alpha", "", "omega"],
+               "undoing a pick restores the unpicked blank changed row")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save Result" }?.isEnabled == false,
+               "undoing a pick disables save again")
+
+    redoMergedText(in: controller, "merged text view exists for pick redo")
+    layout(testWindow, controller)
+
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("right"),
+               "redoing a pick restores picked text")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save Result" }?.isEnabled == true,
+               "redoing a pick re-enables save")
+}
+
 private func testManualMergedEditEnablesSaveAndShowsManualText() throws {
     let files = try temporaryDirectory("manual-merged-edit")
     let left = files.appendingPathComponent("left.txt")
@@ -527,6 +578,97 @@ private func testManualMergedEditEnablesSaveAndShowsManualText() throws {
     assertTrue(text(in: controller.view, identifier: "mergedSide").contains("manual"), "manual text appears in merged pane")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "mergedSide"), redAtLeast: 0.4, blueAtLeast: 0.4),
                "manual merged block uses a distinct middle-pane color")
+}
+
+private func testManualMergedEditUndoRedoRestoresBlockState() throws {
+    let files = try temporaryDirectory("manual-edit-undo-redo")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists")
+        return
+    }
+
+    replaceText(in: merged,
+                range: NSRange(location: ("alpha\n" as NSString).length, length: 0),
+                with: "manual",
+                "manual edit is accepted before undo")
+    layout(testWindow, controller)
+
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("manual"),
+               "manual text appears before undo")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save Result" }?.isEnabled == true,
+               "manual text resolves the conflict before undo")
+
+    undoMergedText(in: controller, "merged text view exists for manual edit undo")
+    layout(testWindow, controller)
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["alpha", "", "omega"],
+               "undoing a manual edit restores the previous unpicked block state")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save Result" }?.isEnabled == false,
+               "undoing a manual edit disables save when the conflict is unresolved again")
+
+    redoMergedText(in: controller, "merged text view exists for manual edit redo")
+    layout(testWindow, controller)
+
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("manual"),
+               "redoing a manual edit restores manual text")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save Result" }?.isEnabled == true,
+               "redoing a manual edit resolves the conflict again")
+}
+
+private func testUndoPreservesCaretInsideChangedBlock() throws {
+    let files = try temporaryDirectory("changed-block-undo-caret")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft content\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright content\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    buttons(in: controller.view).first { $0.title == "Use Left" }?.performClick(nil)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first,
+          let leftRange = nsRange(of: "left content", in: merged.string) else {
+        assertTrue(false, "picked left changed block is rendered before caret undo test")
+        return
+    }
+
+    let insertion = NSRange(location: leftRange.location + ("left" as NSString).length, length: 0)
+    replaceText(in: merged,
+                range: insertion,
+                with: "!",
+                "edit inside picked changed block is accepted")
+    layout(testWindow, controller)
+
+    undoMergedText(in: controller, "merged text view exists for changed block caret undo")
+    layout(testWindow, controller)
+
+    guard let restored = textViews(in: controller.view, identifier: "mergedSide").first,
+          let restoredLeftRange = nsRange(of: "left content", in: restored.string) else {
+        assertTrue(false, "changed block text is restored after undo")
+        return
+    }
+
+    let expectedCaret = restoredLeftRange.location + ("left" as NSString).length
+    assertTrue(restored.selectedRange().location == expectedCaret,
+               "undo inside a changed block keeps the caret at the edit point")
 }
 
 private func testManualMergedEditNormalizesToRightPick() throws {
@@ -666,12 +808,12 @@ private func testMergedPaneAcceptsMultiLinePasteText() throws {
     assertTrue(mergedText.contains("text"), "paste supports multi-line text")
 }
 
-private func testMergedEditRejectsEqualRows() throws {
-    let files = try temporaryDirectory("manual-rejects-equal")
+private func testMergedEditAllowsEqualRows() throws {
+    let files = try temporaryDirectory("manual-allows-equal")
     let left = files.appendingPathComponent("left.txt")
     let right = files.appendingPathComponent("right.txt")
-    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
-    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+    try "alpha\nbeta\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nbeta\n".write(to: right, atomically: true, encoding: .utf8)
 
     let controller = MainWindowController()
     controller.loadView()
@@ -689,9 +831,206 @@ private func testMergedEditRejectsEqualRows() throws {
     replaceText(in: merged,
                 range: alphaRange,
                 with: "changed",
-                shouldAllow: false,
-                "equal rows reject editing in the first implementation")
-    assertTrue(merged.string.contains("alpha"), "rejected equal-row edit leaves text unchanged")
+                "equal rows accept editing")
+    layout(testWindow, controller)
+
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("changed"),
+               "equal-row edit appears in merged pane")
+    let save = buttons(in: controller.view).first { $0.title == "Save Result" }
+    assertTrue(save?.isEnabled == true, "manual equal-row edit can be saved")
+}
+
+private func testUndoPreservesCaretInsideEqualRows() throws {
+    let files = try temporaryDirectory("equal-row-undo-caret")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "one\ntwo words\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "one\ntwo words\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first,
+          let twoRange = nsRange(of: "two words", in: merged.string) else {
+        assertTrue(false, "equal row is rendered before caret undo test")
+        return
+    }
+
+    let insertion = NSRange(location: twoRange.location + ("two" as NSString).length, length: 0)
+    replaceText(in: merged,
+                range: insertion,
+                with: "!",
+                "edit inside equal row is accepted")
+    layout(testWindow, controller)
+
+    undoMergedText(in: controller, "merged text view exists for equal row caret undo")
+    layout(testWindow, controller)
+
+    guard let restored = textViews(in: controller.view, identifier: "mergedSide").first,
+          let restoredTwoRange = nsRange(of: "two words", in: restored.string) else {
+        assertTrue(false, "equal row text is restored after undo")
+        return
+    }
+
+    let expectedCaret = restoredTwoRange.location + ("two" as NSString).length
+    assertTrue(restored.selectedRange().location == expectedCaret,
+               "undo inside equal rows keeps the caret at the edit point")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save Result" }?.isEnabled == false,
+               "undoing equal-row edit leaves the unresolved changed block unresolved")
+}
+
+private func testEditingEqualLineAboveConflictDoesNotResolveConflict() throws {
+    let files = try temporaryDirectory("equal-above-conflict")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "one\ntwo\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "one\ntwo\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first,
+          let twoRange = nsRange(of: "two", in: merged.string) else {
+        assertTrue(false, "merged pane renders equal line above conflict")
+        return
+    }
+
+    replaceText(in: merged,
+                range: twoRange,
+                with: "TWO",
+                "editing equal line above a conflict is accepted")
+    layout(testWindow, controller)
+
+    let lines = textLines(in: controller.view, identifier: "mergedSide")
+    assertTrue(lines == ["one", "TWO", "", "omega"],
+               "editing equal line above conflict does not move text into the conflict block")
+    let save = buttons(in: controller.view).first { $0.title == "Save Result" }
+    assertTrue(save?.isEnabled == false, "editing equal line above conflict does not resolve the conflict")
+}
+
+private func testEditingAtEndOfEqualLineAboveConflictDoesNotResolveConflict() throws {
+    let files = try temporaryDirectory("equal-end-above-conflict")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "one\ntwo\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "one\ntwo\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first,
+          let oneRange = nsRange(of: "one", in: merged.string),
+          nsRange(of: "two", in: merged.string) != nil else {
+        assertTrue(false, "merged pane renders equal lines above conflict")
+        return
+    }
+
+    replaceText(in: merged,
+                range: NSRange(location: NSMaxRange(oneRange), length: 0),
+                with: "!",
+                "editing at end of equal line two rows above conflict is accepted")
+    layout(testWindow, controller)
+
+    guard let afterFirstEdit = textViews(in: controller.view, identifier: "mergedSide").first,
+          let updatedTwoRange = nsRange(of: "two", in: afterFirstEdit.string) else {
+        assertTrue(false, "merged pane renders second equal line after first edit")
+        return
+    }
+    replaceText(in: afterFirstEdit,
+                range: NSRange(location: NSMaxRange(updatedTwoRange), length: 0),
+                with: "!",
+                "editing at end of equal line directly above conflict is accepted")
+    layout(testWindow, controller)
+
+    let lines = textLines(in: controller.view, identifier: "mergedSide")
+    assertTrue(lines == ["one!", "two!", "", "omega"],
+               "end-of-line edits above conflict stay in the equal block")
+    let save = buttons(in: controller.view).first { $0.title == "Save Result" }
+    assertTrue(save?.isEnabled == false, "end-of-line edits above conflict do not resolve the conflict")
+}
+
+private func testMergedEditCanSpanMultipleBlocks() throws {
+    let files = try temporaryDirectory("manual-cross-block")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists")
+        return
+    }
+
+    replaceText(in: merged,
+                range: NSRange(location: 0, length: (merged.string as NSString).length),
+                with: "whole",
+                "edit spanning equal, changed, and equal blocks is accepted")
+    layout(testWindow, controller)
+
+    let mergedText = text(in: controller.view, identifier: "mergedSide")
+    assertTrue(mergedText.contains("whole"), "cross-block edit appears in merged pane")
+    assertTrue(!mergedText.contains("alpha"), "cross-block edit removes old first equal text")
+    assertTrue(!mergedText.contains("omega"), "cross-block edit removes old last equal text")
+    let save = buttons(in: controller.view).first { $0.title == "Save Result" }
+    assertTrue(save?.isEnabled == true, "cross-block edit resolves affected changed block")
+}
+
+private func testCrossBlockMergedEditUndoRestoresEveryAffectedBlock() throws {
+    let files = try temporaryDirectory("cross-block-undo")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists")
+        return
+    }
+
+    replaceText(in: merged,
+                range: NSRange(location: 0, length: (merged.string as NSString).length),
+                with: "whole",
+                "cross-block edit is accepted before undo")
+    layout(testWindow, controller)
+
+    let editedText = text(in: controller.view, identifier: "mergedSide")
+    assertTrue(editedText.contains("whole"), "cross-block edit inserts replacement text before undo")
+    assertTrue(!editedText.contains("alpha") && !editedText.contains("omega"),
+               "cross-block edit removes old equal text before undo")
+
+    undoMergedText(in: controller, "merged text view exists for cross-block undo")
+    layout(testWindow, controller)
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["alpha", "", "omega"],
+               "undoing a cross-block edit restores equal text and the unresolved changed row")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save Result" }?.isEnabled == false,
+               "undoing a cross-block edit restores the unresolved changed block")
 }
 
 private func testDeletingManualMergedTextLeavesResolvedEmptyBlock() throws {
@@ -945,12 +1284,20 @@ private enum SwiftTests {
             testChangedRowsKeepStablePaneWidths()
             try testPaneTextIsSelectableAndMergedPaneEditable()
             try testMergedPaneTextBecomesSelectableAfterPick()
+            try testSidePickUndoRedoRestoresMergedState()
             try testManualMergedEditEnablesSaveAndShowsManualText()
+            try testManualMergedEditUndoRedoRestoresBlockState()
+            try testUndoPreservesCaretInsideChangedBlock()
             try testManualMergedEditNormalizesToRightPick()
             try testManualMergedEditCanBreakLineAtEndOfChangedLine()
             try testAllBlankRowsInDeletionBlockAreEditable()
             try testMergedPaneAcceptsMultiLinePasteText()
-            try testMergedEditRejectsEqualRows()
+            try testMergedEditAllowsEqualRows()
+            try testUndoPreservesCaretInsideEqualRows()
+            try testEditingEqualLineAboveConflictDoesNotResolveConflict()
+            try testEditingAtEndOfEqualLineAboveConflictDoesNotResolveConflict()
+            try testMergedEditCanSpanMultipleBlocks()
+            try testCrossBlockMergedEditUndoRestoresEveryAffectedBlock()
             try testDeletingManualMergedTextLeavesResolvedEmptyBlock()
             try testPaneUsesOneNativeSelectionAcrossMultipleTextBlocks()
             try testNativeTextSelectionKeepsPartialWordRange()

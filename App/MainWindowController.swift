@@ -74,6 +74,8 @@ private protocol PaneTextClipViewDelegate: AnyObject {
 
 private final class PaneTextView: NSTextView {
     weak var clipView: PaneTextClipView?
+    var undoHandler: (() -> Void)?
+    var redoHandler: (() -> Void)?
 
     override var acceptsFirstResponder: Bool {
         true
@@ -95,6 +97,24 @@ private final class PaneTextView: NSTextView {
         }
 
         insertText(string, replacementRange: selectedRange())
+    }
+
+    @objc func undo(_ sender: Any?) {
+        guard let undoHandler else {
+            NSSound.beep()
+            return
+        }
+
+        undoHandler()
+    }
+
+    @objc func redo(_ sender: Any?) {
+        guard let redoHandler else {
+            NSSound.beep()
+            return
+        }
+
+        redoHandler()
     }
 }
 
@@ -163,7 +183,9 @@ private final class PaneTextClipView: NSView {
          font: NSFont,
          lineHeight: CGFloat,
          isEditable: Bool = false,
-         textDelegate: NSTextViewDelegate? = nil) {
+         textDelegate: NSTextViewDelegate? = nil,
+         undoHandler: (() -> Void)? = nil,
+         redoHandler: (() -> Void)? = nil) {
         self.pane = pane
         let measuredText = text.isEmpty ? " " : text
         textSize = PaneTextClipView.measuredSize(for: measuredText, font: font, lineHeight: lineHeight)
@@ -185,6 +207,8 @@ private final class PaneTextClipView: NSView {
         textView.isRichText = false
         textView.importsGraphics = false
         textView.allowsUndo = false
+        textView.undoHandler = undoHandler
+        textView.redoHandler = redoHandler
         textView.delegate = textDelegate
         textView.textContainerInset = .zero
         textView.textContainer?.lineFragmentPadding = 0
@@ -277,16 +301,23 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     }
 
     private struct PendingMergedEdit {
-        let blockIndex: Int
-        let oldBlockRange: NSRange
+        let blockIndexes: [Int]
+        let oldUnionRange: NSRange
         let affectedRange: NSRange
         let replacement: String
+        let undoSelection: PendingMergedSelection
     }
 
     private struct PendingMergedSelection {
         let blockIndex: Int
         let relativeLocation: Int
         let length: Int
+    }
+
+    private struct MergedBlockSnapshot {
+        let blockIndex: Int
+        let pick: MDPickSide
+        let manualLines: [String]
     }
 
     private let paneTextFont = NSFont.monospacedSystemFont(ofSize: 12, weight: NSFont.Weight.regular)
@@ -306,6 +337,11 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     private let stack = NSStackView()
     private let horizontalScrollerRow = NSStackView()
     private let paneScrollerStack = NSStackView()
+    private let mergeUndoManager: UndoManager = {
+        let undoManager = UndoManager()
+        undoManager.groupsByEvent = false
+        return undoManager
+    }()
 
     private var leftURL: URL?
     private var rightURL: URL?
@@ -410,6 +446,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
             }
             pendingMergedEdit = nil
             pendingMergedSelection = nil
+            mergeUndoManager.removeAllActions(withTarget: self)
             resetHorizontalOffsets()
             render(preservingVerticalPosition: false)
         } catch {
@@ -560,7 +597,9 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
                                     font: paneTextFont,
                                     lineHeight: lineHeight,
                                     isEditable: pane == .merged,
-                                    textDelegate: pane == .merged ? self : nil)
+                                    textDelegate: pane == .merged ? self : nil,
+                                    undoHandler: { [weak self] in self?.performUndo() },
+                                    redoHandler: { [weak self] in self?.performRedo() })
         clip.delegate = self
         clip.textOffset = paneStates[pane]?.offset ?? 0
         paneTextClipViews[pane, default: []].append(clip)
@@ -605,7 +644,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
                     mergedRanges.append(MergedBlockTextRange(blockIndex: blockIndex,
                                                              characterRange: NSRange(location: rangeStart,
                                                                                      length: characterLength(for: rangeLines)),
-                                                             isEditable: block.kind == .changed))
+                                                             isEditable: true))
                     if !lines.isEmpty {
                         if mergedHasPreviousLine {
                             mergedCharacterLocation += 1
@@ -723,6 +762,9 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
 
     private func mergedLines(for block: MDBlock, start: Int) -> (lines: [String], start: Int?) {
         if block.kind == .equal {
+            if block.pick == .manual {
+                return (block.manualLines ?? [], start)
+            }
             return (block.leftLines ?? [], start)
         }
 
@@ -742,6 +784,9 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
 
     private func mergedOutputLineCount(for block: MDBlock) -> Int {
         if block.kind == .equal {
+            if block.pick == .manual {
+                return block.manualLines?.count ?? 0
+            }
             return block.leftLines?.count ?? 0
         }
 
@@ -761,11 +806,42 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
 
     @objc private func pick(_ sender: PickButton) {
         guard let block = sender.block else { return }
+        if let blockIndex = document?.blocks.firstIndex(where: { $0 === block }) {
+            registerMergedUndo(before: snapshots(for: [blockIndex]),
+                               actionName: sender.picksLeft ? "Use Left" : "Use Right",
+                               restoreSelection: currentMergedSelection(affecting: [blockIndex]))
+        }
         block.pick = sender.picksLeft ? .left : .right
         block.manualLines = []
         AppLogger.info("Picked \(sender.picksLeft ? "left" : "right") for changed block left_start=\(block.leftStartLine) right_start=\(block.rightStartLine)")
         render(preservingVerticalPosition: true)
         updateButtons()
+    }
+
+    @objc func undo(_ sender: Any?) {
+        performUndo()
+    }
+
+    @objc func redo(_ sender: Any?) {
+        performRedo()
+    }
+
+    private func performUndo() {
+        guard mergeUndoManager.canUndo else {
+            NSSound.beep()
+            return
+        }
+
+        mergeUndoManager.undo()
+    }
+
+    private func performRedo() {
+        guard mergeUndoManager.canRedo else {
+            NSSound.beep()
+            return
+        }
+
+        mergeUndoManager.redo()
     }
 
     @objc private func scrollPaneHorizontally(_ sender: PaneHorizontalSlider) {
@@ -782,15 +858,23 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
                   shouldChangeTextIn affectedCharRange: NSRange,
                   replacementString: String?) -> Bool {
         guard textView === mergedTextView else { return true }
-        guard let range = mergedTextRange(containing: affectedCharRange), range.isEditable else {
+        let ranges = mergedTextRanges(affectedBy: affectedCharRange)
+        guard let firstRange = ranges.first, let lastRange = ranges.last else {
             NSSound.beep()
             return false
         }
 
-        pendingMergedEdit = PendingMergedEdit(blockIndex: range.blockIndex,
-                                              oldBlockRange: range.characterRange,
+        let affectedEnd = NSMaxRange(affectedCharRange)
+        let unionStart = min(firstRange.characterRange.location, affectedCharRange.location)
+        let unionEnd = max(NSMaxRange(lastRange.characterRange), affectedEnd)
+        pendingMergedEdit = PendingMergedEdit(blockIndexes: ranges.map(\.blockIndex),
+                                              oldUnionRange: NSRange(location: unionStart,
+                                                                     length: max(unionEnd - unionStart, 0)),
                                               affectedRange: affectedCharRange,
-                                              replacement: replacementString ?? "")
+                                              replacement: replacementString ?? "",
+                                              undoSelection: pendingSelection(from: affectedCharRange,
+                                                                              blockIndex: firstRange.blockIndex,
+                                                                              blockRange: firstRange.characterRange))
         return true
     }
 
@@ -800,47 +884,141 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
               let edit = pendingMergedEdit else { return }
         pendingMergedEdit = nil
 
-        guard let document, edit.blockIndex < document.blocks.count else {
+        guard let document, let firstBlockIndex = edit.blockIndexes.first, firstBlockIndex < document.blocks.count else {
             updateButtons()
             return
         }
 
         let replacementLength = (edit.replacement as NSString).length
-        let newBlockLength = max(edit.oldBlockRange.length + replacementLength - edit.affectedRange.length, 0)
-        let newBlockRange = NSRange(location: edit.oldBlockRange.location, length: newBlockLength)
+        let newBlockLength = max(edit.oldUnionRange.length + replacementLength - edit.affectedRange.length, 0)
+        let newBlockRange = NSRange(location: edit.oldUnionRange.location, length: newBlockLength)
         let text = textView.string as NSString
         guard NSMaxRange(newBlockRange) <= text.length else {
             updateButtons()
             return
         }
 
-        let block = document.blocks[edit.blockIndex]
         let editedText = text.substring(with: newBlockRange)
-        normalize(block: block, editedLines: lines(fromEditedMergedText: editedText))
-        preserveSelection(from: textView, blockIndex: edit.blockIndex, blockRange: newBlockRange)
-        AppLogger.info("Manually edited changed block left_start=\(block.leftStartLine) right_start=\(block.rightStartLine) pick=\(block.pick.rawValue)")
+        let editedLines = lines(fromEditedMergedText: editedText)
+        let beforeSnapshots = snapshots(for: edit.blockIndexes)
+        for (offset, blockIndex) in edit.blockIndexes.enumerated() where blockIndex < document.blocks.count {
+            normalize(block: document.blocks[blockIndex], editedLines: offset == 0 ? editedLines : [])
+        }
+        registerMergedUndo(before: beforeSnapshots, actionName: "Edit", restoreSelection: edit.undoSelection)
+        pendingMergedSelection = pendingSelection(from: textView.selectedRange(),
+                                                  blockIndex: firstBlockIndex,
+                                                  blockRange: newBlockRange)
+        AppLogger.info("Manually edited merged text affected_blocks=\(edit.blockIndexes.count)")
         render(preservingVerticalPosition: true)
         updateButtons()
     }
 
-    private func mergedTextRange(containing affectedRange: NSRange) -> MergedBlockTextRange? {
-        mergedTextRanges.first { range in
-            range.isEditable && contains(affectedRange, in: range.characterRange)
+    private func snapshots(for blockIndexes: [Int]) -> [MergedBlockSnapshot] {
+        guard let document else { return [] }
+        var seen = Set<Int>()
+        var snapshots = [MergedBlockSnapshot]()
+        for blockIndex in blockIndexes where blockIndex >= 0 && blockIndex < document.blocks.count && !seen.contains(blockIndex) {
+            seen.insert(blockIndex)
+            let block = document.blocks[blockIndex]
+            snapshots.append(MergedBlockSnapshot(blockIndex: blockIndex,
+                                                 pick: block.pick,
+                                                 manualLines: block.manualLines ?? []))
+        }
+        return snapshots
+    }
+
+    private func apply(snapshots: [MergedBlockSnapshot]) {
+        guard let document else { return }
+        for snapshot in snapshots where snapshot.blockIndex >= 0 && snapshot.blockIndex < document.blocks.count {
+            let block = document.blocks[snapshot.blockIndex]
+            block.pick = snapshot.pick
+            block.manualLines = snapshot.manualLines
         }
     }
 
-    private func contains(_ affectedRange: NSRange, in allowedRange: NSRange) -> Bool {
-        let affectedEnd = NSMaxRange(affectedRange)
-        let allowedEnd = NSMaxRange(allowedRange)
-        if affectedRange.length == 0 {
-            return affectedRange.location >= allowedRange.location && affectedRange.location <= allowedEnd
+    private func registerMergedUndo(before snapshots: [MergedBlockSnapshot],
+                                    actionName: String,
+                                    restoreSelection: PendingMergedSelection?) {
+        guard !snapshots.isEmpty else { return }
+
+        mergeUndoManager.beginUndoGrouping()
+        mergeUndoManager.registerUndo(withTarget: self) { target in
+            target.restoreMergedSnapshots(snapshots,
+                                          actionName: actionName,
+                                          restoreSelection: restoreSelection)
         }
-        return affectedRange.location >= allowedRange.location && affectedEnd <= allowedEnd
+        mergeUndoManager.setActionName(actionName)
+        mergeUndoManager.endUndoGrouping()
+    }
+
+    private func restoreMergedSnapshots(_ snapshots: [MergedBlockSnapshot],
+                                        actionName: String,
+                                        restoreSelection: PendingMergedSelection?) {
+        let blockIndexes = snapshots.map(\.blockIndex)
+        let redoSnapshots = self.snapshots(for: blockIndexes)
+        let redoSelection = currentMergedSelection(affecting: Set(blockIndexes))
+        apply(snapshots: snapshots)
+        pendingMergedSelection = restoreSelection ?? redoSelection
+        AppLogger.info("Restored merged edit state action=\(actionName) affected_blocks=\(snapshots.count)")
+        render(preservingVerticalPosition: true)
+        updateButtons()
+        registerMergedUndo(before: redoSnapshots,
+                           actionName: actionName,
+                           restoreSelection: redoSelection)
+    }
+
+    private func mergedTextRanges(affectedBy affectedRange: NSRange) -> [MergedBlockTextRange] {
+        guard !mergedTextRanges.isEmpty else { return [] }
+        let startIndex = mergedTextRangeIndex(at: affectedRange.location)
+        let endLocation = affectedRange.length == 0 ? affectedRange.location : max(NSMaxRange(affectedRange) - 1, affectedRange.location)
+        let endIndex = mergedTextRangeIndex(at: endLocation)
+        guard let startIndex, let endIndex else { return [] }
+        let lower = min(startIndex, endIndex)
+        let upper = max(startIndex, endIndex)
+        return Array(mergedTextRanges[lower...upper]).filter(\.isEditable)
+    }
+
+    private func mergedTextRangeIndex(at location: Int) -> Int? {
+        for (index, range) in mergedTextRanges.enumerated() {
+            let start = range.characterRange.location
+            let end = NSMaxRange(range.characterRange)
+
+            if range.characterRange.length == 0, location == start {
+                return index
+            }
+
+            if location >= start && location < end {
+                return index
+            }
+
+            if location == end {
+                let nextStart = index + 1 < mergedTextRanges.count ? mergedTextRanges[index + 1].characterRange.location : nil
+                if nextStart == nil || location < nextStart! {
+                    return index
+                }
+            }
+        }
+
+        guard let last = mergedTextRanges.last, location >= NSMaxRange(last.characterRange) else {
+            return nil
+        }
+        return mergedTextRanges.indices.last
     }
 
     private func normalize(block: MDBlock, editedLines: [String]) {
         let leftLines = block.leftLines ?? []
         let rightLines = block.rightLines ?? []
+        if block.kind == .equal {
+            if editedLines == leftLines {
+                block.pick = .unpicked
+                block.manualLines = []
+            } else {
+                block.pick = .manual
+                block.manualLines = editedLines
+            }
+            return
+        }
+
         if editedLines == leftLines {
             block.pick = .left
             block.manualLines = []
@@ -862,13 +1040,24 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         return normalized.components(separatedBy: "\n")
     }
 
-    private func preserveSelection(from textView: NSTextView, blockIndex: Int, blockRange: NSRange) {
-        let selection = textView.selectedRange()
+    private func currentMergedSelection(affecting blockIndexes: Set<Int>) -> PendingMergedSelection? {
+        guard let textView = mergedTextView else { return nil }
+        guard let rangeIndex = mergedTextRangeIndex(at: textView.selectedRange().location) else { return nil }
+        let range = mergedTextRanges[rangeIndex]
+        guard blockIndexes.contains(range.blockIndex) else { return nil }
+        return pendingSelection(from: textView.selectedRange(),
+                                blockIndex: range.blockIndex,
+                                blockRange: range.characterRange)
+    }
+
+    private func pendingSelection(from selection: NSRange,
+                                  blockIndex: Int,
+                                  blockRange: NSRange) -> PendingMergedSelection {
         let relativeLocation = min(max(selection.location - blockRange.location, 0), blockRange.length)
         let length = min(selection.length, max(blockRange.length - relativeLocation, 0))
-        pendingMergedSelection = PendingMergedSelection(blockIndex: blockIndex,
-                                                        relativeLocation: relativeLocation,
-                                                        length: length)
+        return PendingMergedSelection(blockIndex: blockIndex,
+                                      relativeLocation: relativeLocation,
+                                      length: length)
     }
 
     private func restorePendingMergedSelection() {
@@ -970,6 +1159,9 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
                 return block.rightLines ?? []
             case .merged:
                 if block.kind == .equal {
+                    if block.pick == .manual {
+                        return block.manualLines ?? []
+                    }
                     return block.leftLines ?? []
                 }
 

@@ -181,14 +181,13 @@ The left and right panes stay read-only.
 Use `NSTextViewDelegate` or an `NSTextView` subclass to validate edits before
 TextKit applies them.
 
-Rules:
+Current implementation direction:
 
-- Allow edits fully inside one changed block's middle range.
-- Reject edits in equal blocks for the first implementation unless full-file
-  editing proves simple.
-- Reject edits that span multiple blocks for the first implementation.
-- Allow deleting all text in a changed block; that is a valid manual resolution
-  with `manualLines == []`.
+- Allow edits in every middle-pane range, including equal blocks.
+- Allow edits spanning multiple rendered diff blocks.
+- Store same-as-left edits as normal equal/left state where possible.
+- Store changed equal rows, custom conflict rows, and cross-block replacements
+  as manual output.
 
 A cross-block edit means one text operation touches more than one rendered block.
 Examples:
@@ -199,8 +198,10 @@ Examples:
 - Pressing Backspace at the first character of a block when the caret would
   merge it with the previous block.
 
-Rejecting these edits keeps the first version simple and avoids ambiguous
-questions like "does deleting across a boundary remove unchanged context?"
+When a cross-block edit replaces several rendered blocks, the replacement text
+is assigned to the first affected block and the other affected blocks become
+empty manual output. This preserves saved output order while keeping the
+existing block-based renderer.
 
 ## Updating The Model From TextKit
 
@@ -311,23 +312,23 @@ library for this feature.
 
 ## Undo Direction
 
-First editable version can ship without undo if that keeps the feature small.
-To avoid painting ourselves into a corner:
+Undo is implemented at the merge-model level with AppKit `UndoManager` rather
+than by relying on `NSTextView`'s text-storage undo. The middle text view is
+rebuilt after each accepted edit, so the durable undo unit is the affected block
+state, not the temporary editor contents.
 
-- Keep all edit changes flowing through one coordinator method.
-- Store enough before/after state there to register undo later.
-- Let `NSTextView` own text insertion/deletion undo.
-- Register matching model-state undo operations with the window's
-  `NSUndoManager`.
+- All side picks and text edits flow through the controller before mutating the
+  bridge model.
+- Before each mutation, the controller stores `MergedBlockSnapshot` values with
+  `blockIndex`, `pick`, and `manualLines`.
+- `Cmd+Z` and `Shift+Cmd+Z` route through the middle `NSTextView`/responder
+  chain into the controller's `UndoManager`.
+- Restoring a snapshot writes `pick/manualLines` back to the bridge objects,
+  re-renders the middle pane, and updates save readiness.
 
-Keep the previous block state as a value snapshot in the core model shape too,
-not only as visible text. For a changed block, that snapshot should include at
-least `pick` and `manualLines`; if full-file editing is added, storing the whole
-previous `DiffBlock` is safer. Restoring from this snapshot should update both
-the bridge object and the visible editor state without recomputing the diff.
-
-When undo is implemented, undoing a manual edit should restore both the visible
-middle text and the block's `pick/manualLines` state.
+If full-file editing is added later, storing the whole previous `DiffBlock` (or
+a document-level snapshot for larger edits) will be safer than extending this
+snapshot one field at a time.
 
 ## Suggested Implementation Steps
 
@@ -336,13 +337,11 @@ middle text and the block's `pick/manualLines` state.
 3. Extend `RenderPlan` with middle-pane block range metadata.
 4. Separate editable middle text ranges from layout-only padding rows.
 5. Make the middle pane `NSTextView` editable while keeping left/right read-only.
-   If making equal rows editable is simple, include it; otherwise keep it as the
-   next feature.
-6. Add edit validation so edits are limited to a single changed block.
+6. Add edit mapping for equal rows and cross-block ranges.
 7. Sync accepted edits back to the block model and normalize left/right matches.
 8. Update render colors for manual blocks.
 9. Add Swift tests for typing, deleting, left/right normalization, save
-   readiness, and rejected equal-row edits.
+   readiness, equal-row edits, and cross-block edits.
 10. Add optional local left-middle and middle-right diff rendering after the basic
    editor behavior is solid.
 
@@ -358,7 +357,7 @@ Core tests:
 Swift/UI tests:
 
 - Middle pane is editable; left and right panes remain read-only.
-- Equal middle rows reject typing in the changed-block-only version.
+- Equal middle rows accept typing and save as manual output when changed.
 - Changed middle row accepts typing and enables save when all conflicts are
   resolved.
 - Deleting all text inside a changed block creates a valid manual empty block.
@@ -374,9 +373,10 @@ Swift/UI tests:
 ## Resolved Direction From Review
 
 1. Editing should eventually cover the whole middle pane. For the first version,
-   do changed blocks only unless full editing is clearly simple.
+   do changed blocks only unless full editing is clearly simple. Implemented:
+   editing now covers the whole middle pane.
 2. Cross-block edits are text operations whose range touches more than one diff
-   block. The first version should reject them.
+   block. Implemented: these edits are accepted and mapped to manual output.
 3. Block-level manual coloring is enough for the first version.
 4. The middle pane should not show or save fake empty padding lines. Alignment
    rows are layout only.

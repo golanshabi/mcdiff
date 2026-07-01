@@ -68,6 +68,15 @@ final class MacDiffApp: NSObject, NSApplicationDelegate {
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
         let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(NSMenuItem(title: "Undo",
+                                    action: Selector(("undo:")),
+                                    keyEquivalent: "z"))
+        let redo = NSMenuItem(title: "Redo",
+                              action: Selector(("redo:")),
+                              keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(redo)
+        editMenu.addItem(NSMenuItem.separator())
         editMenu.addItem(NSMenuItem(title: "Cut",
                                     action: #selector(NSText.cut(_:)),
                                     keyEquivalent: "x"))

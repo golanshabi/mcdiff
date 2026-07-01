@@ -37,7 +37,11 @@ std::string mergeText(const DiffDocument& doc) {
     for (const auto& block : doc.blocks) {
         switch (block.kind) {
             case DiffBlockKind::Equal:
-                append(output, block.leftLines);
+                if (block.pick == PickSide::Manual) {
+                    append(output, block.manualLines);
+                } else {
+                    append(output, block.leftLines);
+                }
                 break;
             case DiffBlockKind::Changed:
                 if (block.pick == PickSide::Left) {

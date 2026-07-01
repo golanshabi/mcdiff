@@ -242,6 +242,17 @@ void testInvalidBlocksAndPickValidation() {
     emptyManual.blocks.push_back(emptyManualBlock);
     expect(macdiff::canMerge(emptyManual), "empty manual changed block can merge");
     expect(macdiff::mergeText(emptyManual).empty(), "empty manual changed block merge output");
+
+    DiffDocument manualEqual;
+    DiffBlock equalBlock;
+    equalBlock.kind = DiffBlockKind::Equal;
+    equalBlock.leftLines = {"original"};
+    equalBlock.rightLines = {"original"};
+    equalBlock.manualLines = {"edited"};
+    equalBlock.pick = PickSide::Manual;
+    manualEqual.blocks.push_back(equalBlock);
+    expect(macdiff::canMerge(manualEqual), "manual equal block can merge");
+    expect(macdiff::mergeText(manualEqual) == "edited\n", "manual equal block merge output");
 }
 
 }
