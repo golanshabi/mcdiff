@@ -43,14 +43,14 @@ private func views(in view: NSView, identifier: String) -> [NSView] {
 }
 
 private func labels(in view: NSView, identifier: String) -> [NSTextField] {
-    stackViews(in: view, identifier: identifier).flatMap { stack in
-        allSubviews(of: stack).compactMap { $0 as? NSTextField }
+    views(in: view, identifier: identifier).flatMap { matchedView in
+        allSubviews(of: matchedView).compactMap { $0 as? NSTextField }
     }
 }
 
 private func textViews(in view: NSView, identifier: String) -> [NSTextView] {
-    stackViews(in: view, identifier: identifier).flatMap { stack in
-        allSubviews(of: stack).compactMap { $0 as? NSTextView }
+    views(in: view, identifier: identifier).flatMap { matchedView in
+        allSubviews(of: matchedView).compactMap { $0 as? NSTextView }
     }
 }
 
@@ -118,7 +118,7 @@ private func textLabelOrigins(in view: NSView, clipIdentifier: String) -> [CGFlo
 }
 
 private func paneWidths(in view: NSView, identifier: String) -> [CGFloat] {
-    stackViews(in: view, identifier: identifier).map(\.frame.width)
+    views(in: view, identifier: identifier).map(\.frame.width)
 }
 
 private func assertStableWidths(_ widths: [CGFloat], _ message: String) {
@@ -158,10 +158,14 @@ private func backgroundColors(in view: NSView) -> [(red: CGFloat, green: CGFloat
 
 private func backgroundColors(in view: NSView,
                               identifier: String) -> [(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat)] {
-    stackViews(in: view, identifier: identifier).compactMap { stack in
+    let stackColors: [(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat)] = stackViews(in: view, identifier: identifier).compactMap { stack in
         guard let cgColor = stack.layer?.backgroundColor else { return nil }
         return colorComponents(NSColor(cgColor: cgColor) ?? .clear)
     }
+    let paneColors = views(in: view, identifier: identifier)
+        .compactMap { $0 as? PaneColumnView }
+        .flatMap { pane in pane.backgroundRuns.map { colorComponents($0.color) } }
+    return stackColors + paneColors
 }
 
 private func hasColor(_ colors: [(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat)],
@@ -318,7 +322,9 @@ private func testMainWindowLoadsAndPicksDiff() throws {
     assertTrue(labelText.contains("right"), "rendered right-side changed line")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "leftSide"), redAtLeast: 0.8), "changed left side is red")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "rightSide"), greenAtLeast: 0.45), "changed right side is green")
-    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "merged pane starts unresolved")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "merged pane does not show an unresolved placeholder")
+    assertTrue(!textLines(in: controller.view, identifier: "mergedSide").contains("left"), "merged pane starts with changed row blank")
+    assertTrue(!textLines(in: controller.view, identifier: "mergedSide").contains("right"), "merged pane starts without either side picked")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "mergedSide"), redAtLeast: 0.8, greenAtLeast: 0.3), "unresolved merged pane uses fourth color")
 
     let useRight = buttons(in: controller.view).first { $0.title == "Use Right" }
@@ -330,7 +336,7 @@ private func testMainWindowLoadsAndPicksDiff() throws {
     assertTrue(save?.isEnabled == true, "save enables after picking a changed block")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "rightSide"), blueAtLeast: 0.7), "picked right side is blue")
     assertTrue(text(in: controller.view, identifier: "mergedSide").contains("right"), "merged pane updates to picked right content")
-    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "merged pane clears unresolved state after pick")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "merged pane stays placeholder-free after pick")
 }
 
 private func testDeletionDiffRequiresExplicitPickAndUpdatesMergedPane() {
@@ -347,7 +353,9 @@ private func testDeletionDiffRequiresExplicitPickAndUpdatesMergedPane() {
     assertTrue(labelString(in: controller.view, identifier: "leftSideLineNumbers").contains("4"), "deletion diff renders left line number gutter")
     assertTrue(labelString(in: controller.view, identifier: "mergedSideLineNumbers").isEmpty, "deletion diff does not render merged line numbers")
     assertTrue(labelString(in: controller.view, identifier: "rightSideLineNumbers").contains("4"), "deletion diff renders right line number gutter")
-    assertTrue(labelStrings(in: controller.view, identifier: "rightSideLineNumbers").contains(""), "empty right-side deletion row has no line number")
+    assertTrue(labelString(in: controller.view, identifier: "rightSideLineNumbers")
+        .components(separatedBy: "\n")
+        .contains(""), "empty right-side deletion row has no line number")
     assertTrue(labels(in: controller.view).contains { !$0.frame.isEmpty && !$0.isHidden }, "rendered labels have visible frames")
 
     let save = buttons(in: controller.view).first { $0.title == "Save Result" }
@@ -356,13 +364,13 @@ private func testDeletionDiffRequiresExplicitPickAndUpdatesMergedPane() {
     assertTrue(buttons(in: controller.view).contains { $0.title == "Use Right" }, "deletion diff renders Use Right")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "leftSide"), redAtLeast: 0.8), "deletion diff shows red deletion side")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "rightSide"), greenAtLeast: 0.45), "deletion diff shows green addition side")
-    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "deletion merged pane starts unresolved")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "deletion merged pane starts without unresolved placeholder text")
 
     buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
     layout(testWindow, controller)
     assertTrue(!textLines(in: controller.view, identifier: "mergedSide").contains("d"), "right pick removes deleted line from merged pane")
     assertTrue(labelString(in: controller.view, identifier: "mergedSideLineNumbers").isEmpty, "picked deletion still does not render merged line numbers")
-    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "other unpicked block remains unresolved")
+    assertTrue(save?.isEnabled == false, "other unpicked block keeps save disabled")
 
     buttons(in: controller.view).first { $0.title == "Use Left" }?.performClick(nil)
     layout(testWindow, controller)
@@ -378,8 +386,10 @@ private func testChangedRowsKeepStablePaneWidths() {
                     right: URL(fileURLWithPath: "Tests/diff_2"))
     layout(testWindow, controller)
 
-    let rows = stackViews(in: controller.view, identifier: "blockRow")
-    assertTrue(rows.count >= 3, "fixture renders multiple block rows")
+    assertTrue(views(in: controller.view, identifier: "diffTable").count == 1, "fixture renders one TextKit diff table")
+    assertTrue(textViews(in: controller.view, identifier: "leftSide").count == 1, "left pane renders one text view")
+    assertTrue(textViews(in: controller.view, identifier: "mergedSide").count == 1, "merged pane renders one text view")
+    assertTrue(textViews(in: controller.view, identifier: "rightSide").count == 1, "right pane renders one text view")
     assertStableWidths(paneWidths(in: controller.view, identifier: "leftSide"), "left pane widths are stable")
     assertStableWidths(paneWidths(in: controller.view, identifier: "mergedSide"), "merged pane widths are stable")
     assertStableWidths(paneWidths(in: controller.view, identifier: "rightSide"), "right pane widths are stable")
@@ -402,27 +412,22 @@ private func testPaneTextIsSelectableAndReadOnly() throws {
 
     for identifier in ["leftSide", "mergedSide", "rightSide"] {
         let paneTextViews = textViews(in: controller.view, identifier: identifier)
-        assertTrue(!paneTextViews.isEmpty, "\(identifier) renders selectable text views")
+        assertTrue(paneTextViews.count == 1, "\(identifier) renders one native text view")
         assertTrue(paneTextViews.allSatisfy { !$0.isEditable }, "\(identifier) text is read-only")
         assertTrue(paneTextViews.allSatisfy { !$0.drawsBackground }, "\(identifier) text keeps pane background visible")
         assertTrue(paneTextViews.allSatisfy { $0.textContainer?.widthTracksTextView == false },
                    "\(identifier) text does not wrap")
-        assertTrue(paneTextViews.filter { $0.string != "Unresolved" && $0.string != " " }.allSatisfy(\.isSelectable),
-                   "\(identifier) real text is selectable")
-        assertTrue(views(in: controller.view, identifier: "\(identifier)SelectionOverlay").count == paneTextViews.count,
-                   "\(identifier) renders a custom selection overlay for every text view")
+        assertTrue(paneTextViews.allSatisfy(\.isSelectable), "\(identifier) uses native selection")
+        assertTrue(views(in: controller.view, identifier: "\(identifier)SelectionOverlay").isEmpty,
+                   "\(identifier) does not render custom selection overlays")
     }
-    assertTrue(textViews(in: controller.view, identifier: "mergedSide")
-        .filter { $0.string == "Unresolved" }
-        .allSatisfy { !$0.isSelectable },
-        "merged unresolved placeholders are not selectable text")
 
     assertTrue(text(in: controller.view, identifier: "leftSide").contains("left words"),
                "left pane text remains discoverable")
     assertTrue(text(in: controller.view, identifier: "rightSide").contains("right words"),
                "right pane text remains discoverable")
-    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("Unresolved"),
-               "merged pane unresolved text remains discoverable")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("Unresolved"),
+               "merged pane does not render unresolved placeholder text")
 }
 
 private func testMergedPaneTextBecomesSelectableAfterPick() throws {
@@ -439,17 +444,20 @@ private func testMergedPaneTextBecomesSelectableAfterPick() throws {
     controller.load(left: left, right: right)
     layout(testWindow, controller)
 
-    let unresolved = textViews(in: controller.view, identifier: "mergedSide").first { $0.string == "Unresolved" }
-    assertTrue(unresolved?.isSelectable == false, "unpicked merged placeholder is not selectable")
+    let unpicked = textViews(in: controller.view, identifier: "mergedSide").first
+    assertTrue(unpicked?.string.contains("Unresolved") == false, "unpicked merged pane has no placeholder text")
+    assertTrue(unpicked?.isSelectable == true, "merged pane uses native selection before pick")
 
     buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
     layout(testWindow, controller)
 
-    let picked = textViews(in: controller.view, identifier: "mergedSide").first { $0.string == "right words" }
-    assertTrue(picked?.isSelectable == true, "picked merged text becomes selectable")
+    let picked = textViews(in: controller.view, identifier: "mergedSide").first
+    assertTrue(picked?.string.contains("right words") == true, "picked merged text appears in the native text view")
+    assertTrue(picked?.string.contains("Unresolved") == false, "picked merged text remains placeholder-free")
+    assertTrue(picked?.isSelectable == true, "picked merged text remains selectable")
 }
 
-private func testPaneKeepsSelectionsAcrossMultipleTextBlocks() throws {
+private func testPaneUsesOneNativeSelectionAcrossMultipleTextBlocks() throws {
     let files = try temporaryDirectory("multi-block-selection")
     let left = files.appendingPathComponent("left.txt")
     let right = files.appendingPathComponent("right.txt")
@@ -463,34 +471,27 @@ private func testPaneKeepsSelectionsAcrossMultipleTextBlocks() throws {
     controller.load(left: left, right: right)
     layout(testWindow, controller)
 
-    let leftTextViews = textViews(in: controller.view, identifier: "leftSide")
-    guard let firstSelection = leftTextViews.first(where: { $0.string == "left first" }),
-          let secondSelection = leftTextViews.first(where: { $0.string == "left second" }) else {
-        assertTrue(false, "left pane renders multiple selectable changed text blocks")
+    guard let textView = textViews(in: controller.view, identifier: "leftSide").first,
+          let firstRange = textView.string.range(of: "left first"),
+          let secondRange = textView.string.range(of: "left second") else {
+        assertTrue(false, "left pane renders both changed text blocks in one native text view")
         return
     }
 
-    firstSelection.setSelectedRange(NSRange(location: 0, length: (firstSelection.string as NSString).length))
-    secondSelection.setSelectedRange(NSRange(location: 0, length: (secondSelection.string as NSString).length))
-    assertTrue(firstSelection.selectedRange().length == (firstSelection.string as NSString).length,
-               "first text block keeps selected range")
-    assertTrue(secondSelection.selectedRange().length == (secondSelection.string as NSString).length,
-               "second text block keeps selected range")
-    let selectedOverlays = views(in: controller.view, identifier: "leftSideSelectionOverlay")
-        .compactMap { $0 as? PaneSelectionOverlayView }
-        .filter { !$0.isHidden }
-    assertTrue(selectedOverlays.count == 2,
-               "selected left text blocks show custom blue overlays")
+    let firstNSRange = NSRange(firstRange, in: textView.string)
+    let secondNSRange = NSRange(secondRange, in: textView.string)
+    let selection = NSRange(location: firstNSRange.location,
+                            length: secondNSRange.location + secondNSRange.length - firstNSRange.location)
+    textView.setSelectedRange(selection)
 
-    assertTrue(firstSelection.string[
-        Range(firstSelection.selectedRange(), in: firstSelection.string)!
-    ] == "left first", "first selected text remains marked")
-    assertTrue(secondSelection.string[
-        Range(secondSelection.selectedRange(), in: secondSelection.string)!
-    ] == "left second", "second selected text remains marked")
+    assertTrue(textView.selectedRange() == selection, "native text view keeps a selection across changed blocks")
+    let selectedText = (textView.string as NSString).substring(with: textView.selectedRange())
+    assertTrue(selectedText.contains("left first"), "selection includes first changed block")
+    assertTrue(selectedText.contains("middle"), "selection crosses the equal block between changes")
+    assertTrue(selectedText.contains("left second"), "selection includes second changed block")
 }
 
-private func testSelectionOverlayHugsPartialWordSelection() throws {
+private func testNativeTextSelectionKeepsPartialWordRange() throws {
     let files = try temporaryDirectory("partial-word-selection")
     let left = files.appendingPathComponent("left.txt")
     let right = files.appendingPathComponent("right.txt")
@@ -505,7 +506,7 @@ private func testSelectionOverlayHugsPartialWordSelection() throws {
     layout(testWindow, controller)
 
     guard let textView = textViews(in: controller.view, identifier: "leftSide")
-        .first(where: { $0.string == "alpha beta gamma" }),
+        .first(where: { $0.string.contains("alpha beta gamma") }),
           let betaRange = textView.string.range(of: "beta") else {
         assertTrue(false, "left pane renders selectable text containing beta")
         return
@@ -513,20 +514,13 @@ private func testSelectionOverlayHugsPartialWordSelection() throws {
 
     textView.setSelectedRange(NSRange(betaRange, in: textView.string))
 
-    guard let overlay = views(in: controller.view, identifier: "leftSideSelectionOverlay")
-        .compactMap({ $0 as? PaneSelectionOverlayView })
-        .first(where: { !$0.isHidden }) else {
-        assertTrue(false, "partial word selection shows custom overlay")
-        return
-    }
-
-    let widestSelectionRect = overlay.selectedRects.map(\.width).max() ?? 0
-    assertTrue(widestSelectionRect > 0, "partial word selection has an overlay width")
-    assertTrue(widestSelectionRect < overlay.bounds.width * 0.5,
-               "partial word selection overlay hugs selected text instead of filling the segment")
+    let selectedText = (textView.string as NSString).substring(with: textView.selectedRange())
+    assertTrue(selectedText == "beta", "native partial-word selection keeps the exact selected word")
+    assertTrue(views(in: controller.view, identifier: "leftSideSelectionOverlay").isEmpty,
+               "partial selection uses TextKit instead of a custom overlay")
 }
 
-private func testPickingOneBlockLeavesOtherMergedBlocksUnresolved() throws {
+private func testPickingOneBlockLeavesOtherMergedBlocksBlankAndUnsaved() throws {
     let files = try temporaryDirectory("multi-change-files")
     let left = files.appendingPathComponent("left.txt")
     let right = files.appendingPathComponent("right.txt")
@@ -540,8 +534,8 @@ private func testPickingOneBlockLeavesOtherMergedBlocksUnresolved() throws {
     controller.load(left: left, right: right)
     layout(testWindow, controller)
 
-    assertTrue(text(in: controller.view, identifier: "mergedSide").components(separatedBy: "Unresolved").count - 1 == 2,
-               "both changed blocks start unresolved")
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["a", "", "b", "", "c"],
+               "both unpicked changed blocks start blank in the merged pane")
 
     buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
     layout(testWindow, controller)
@@ -549,7 +543,37 @@ private func testPickingOneBlockLeavesOtherMergedBlocksUnresolved() throws {
     let mergedText = text(in: controller.view, identifier: "mergedSide")
     assertTrue(mergedText.contains("right1"), "first picked block updates merged pane")
     assertTrue(!mergedText.contains("left1"), "first picked block no longer shows old text in merged pane")
-    assertTrue(mergedText.contains("Unresolved"), "second unpicked block remains unresolved")
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide").contains(""), "second unpicked block remains blank")
+    let save = buttons(in: controller.view).first { $0.title == "Save Result" }
+    assertTrue(save?.isEnabled == false, "second unpicked block keeps save disabled")
+}
+
+private func testPickingSmallerConflictSqueezesMergedRows() throws {
+    let files = try temporaryDirectory("smaller-pick-squeezes")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "same\nleft one\nleft two\nleft three\ntail\n".write(to: left, atomically: true, encoding: .utf8)
+    try "same\nright one\ntail\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["same", "", "", "", "tail"],
+               "unpicked conflict reserves blank rows for the larger side")
+
+    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    layout(testWindow, controller)
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["same", "right one", "tail"],
+               "picking the smaller side removes the extra merged rows")
+    assertTrue(textLines(in: controller.view, identifier: "leftSide").count == 3,
+               "all panes squeeze to the picked merged row count")
+    assertTrue(textLines(in: controller.view, identifier: "rightSide").count == 3,
+               "right pane stays aligned after the squeeze")
 }
 
 private func testLongLineSlidersMoveAllPanesTogetherWithoutChangingPaneWidths() throws {
@@ -641,9 +665,10 @@ private enum SwiftTests {
             testChangedRowsKeepStablePaneWidths()
             try testPaneTextIsSelectableAndReadOnly()
             try testMergedPaneTextBecomesSelectableAfterPick()
-            try testPaneKeepsSelectionsAcrossMultipleTextBlocks()
-            try testSelectionOverlayHugsPartialWordSelection()
-            try testPickingOneBlockLeavesOtherMergedBlocksUnresolved()
+            try testPaneUsesOneNativeSelectionAcrossMultipleTextBlocks()
+            try testNativeTextSelectionKeepsPartialWordRange()
+            try testPickingOneBlockLeavesOtherMergedBlocksBlankAndUnsaved()
+            try testPickingSmallerConflictSqueezesMergedRows()
             try testLongLineSlidersMoveAllPanesTogetherWithoutChangingPaneWidths()
         } catch {
             fputs("Swift test failed: \(error.localizedDescription)\n", stderr)
