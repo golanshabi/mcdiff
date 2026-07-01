@@ -1,3 +1,4 @@
+#include "../Core/ConflictParser.hpp"
 #include "../Core/DiffEngine.hpp"
 #include "../Core/MergeBuilder.hpp"
 
@@ -207,6 +208,74 @@ void testMultipleIndependentHunks() {
     expect(macdiff::mergeText(doc) == "a\nright1\nb\nleft2\nc\n", "multiple hunks mixed merge output");
 }
 
+void testConflictDocumentParsing() {
+    auto doc = macdiff::buildConflictDocument(
+        "before\n"
+        "<<<<<<< HEAD\n"
+        "ours\n"
+        "=======\n"
+        "theirs\n"
+        ">>>>>>> branch\n"
+        "after\n");
+
+    expect(doc.blocks.size() == 3, "conflict document block count");
+    expect(doc.blocks[0].kind == DiffBlockKind::Equal, "conflict document first block equal");
+    expect(doc.blocks[1].kind == DiffBlockKind::Changed, "conflict document middle block changed");
+    expect(doc.blocks[2].kind == DiffBlockKind::Equal, "conflict document last block equal");
+    expectLine(doc.blocks[0].leftLines, 0, "before", "conflict document before line");
+    expectLine(doc.blocks[1].leftLines, 0, "ours", "conflict document ours line");
+    expectLine(doc.blocks[1].rightLines, 0, "theirs", "conflict document theirs line");
+    expectLine(doc.blocks[2].leftLines, 0, "after", "conflict document after line");
+    expect(!macdiff::canMerge(doc), "conflict document cannot merge before resolution");
+
+    doc.blocks[1].pick = PickSide::Manual;
+    doc.blocks[1].manualLines = {"resolved"};
+    expect(macdiff::mergeText(doc) == "before\nresolved\nafter\n", "conflict document manual merge output");
+}
+
+void testConflictDocumentParsingMultipleAndDiff3() {
+    auto doc = macdiff::buildConflictDocument(
+        "top\n"
+        "<<<<<<< ours\n"
+        "left one\n"
+        "||||||| base\n"
+        "base one\n"
+        "=======\n"
+        "right one\n"
+        ">>>>>>> theirs\n"
+        "middle\n"
+        "<<<<<<< ours\n"
+        "left two\n"
+        "=======\n"
+        "right two\n"
+        ">>>>>>> theirs\n"
+        "bottom\n");
+
+    expect(doc.blocks.size() == 5, "multiple conflict document block count");
+    expect(doc.blocks[1].kind == DiffBlockKind::Changed, "diff3 first conflict changed");
+    expect(doc.blocks[3].kind == DiffBlockKind::Changed, "second conflict changed");
+    expectLine(doc.blocks[1].leftLines, 0, "left one", "diff3 left line");
+    expectLine(doc.blocks[1].rightLines, 0, "right one", "diff3 right line");
+    expectLine(doc.blocks[3].leftLines, 0, "left two", "second conflict left line");
+    expectLine(doc.blocks[3].rightLines, 0, "right two", "second conflict right line");
+    expect(doc.blocks[1].rightLines.size() == 1, "diff3 base lines are ignored");
+}
+
+void testConflictDocumentRejectsMalformedMarkers() {
+    expectThrows<std::runtime_error>([] {
+        (void)macdiff::buildConflictDocument(
+            "<<<<<<< ours\n"
+            "left\n"
+            ">>>>>>> theirs\n");
+    }, "conflict document missing separator");
+
+    expectThrows<std::runtime_error>([] {
+        (void)macdiff::buildConflictDocument(
+            "=======\n"
+            "orphan\n");
+    }, "conflict document orphan separator");
+}
+
 void testInvalidBlocksAndPickValidation() {
     DiffDocument invalid;
     DiffBlock block;
@@ -265,6 +334,9 @@ int main() {
     testDeletionAtBeginningMiddleAndEnd();
     testMultilineReplacementAndBlankLines();
     testMultipleIndependentHunks();
+    testConflictDocumentParsing();
+    testConflictDocumentParsingMultipleAndDiff3();
+    testConflictDocumentRejectsMalformedMarkers();
     testInvalidBlocksAndPickValidation();
 
     if (failures != 0) {

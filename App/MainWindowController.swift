@@ -320,6 +320,17 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         let manualLines: [String]
     }
 
+    private struct TimedPhase {
+        let name: String
+        let milliseconds: Double
+    }
+
+    private enum SaveTarget {
+        case savePanel
+        case gitWorktreeFile(repositoryRoot: URL, relativePath: String)
+        case mergeToolOutput(URL)
+    }
+
     private let paneTextFont = NSFont.monospacedSystemFont(ofSize: 12, weight: NSFont.Weight.regular)
     private let lineNumberFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
     private let pickButtonSlotWidth: CGFloat = 92
@@ -333,6 +344,8 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     private let rightButton = NSButton(title: "Choose Right File", target: nil, action: nil)
     private let compareButton = NSButton(title: "Compare", target: nil, action: nil)
     private let saveButton = NSButton(title: "Save Result", target: nil, action: nil)
+    private let gitFilePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let gitStatusLabel = NSTextField(labelWithString: "")
     private let scroll = NSScrollView()
     private let stack = NSStackView()
     private let horizontalScrollerRow = NSStackView()
@@ -346,6 +359,11 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     private var leftURL: URL?
     private var rightURL: URL?
     private var document: MDDocument?
+    private var saveTarget = SaveTarget.savePanel
+    private var gitRepositoryRoot: URL?
+    private var gitConflictFiles = [MDGitConflictFile]()
+    private var selectedGitConflictIndex: Int?
+    private var gitResolvedPaths = Set<String>()
     private var paneScrollers = [DiffPane: PaneHorizontalSlider]()
     private var paneStates = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, PaneHorizontalState()) })
     private var paneTextClipViews = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, [PaneTextClipView]()) })
@@ -354,6 +372,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     private var pendingMergedEdit: PendingMergedEdit?
     private var pendingMergedSelection: PendingMergedSelection?
     private var sharedHorizontalValue: Double = 0
+    var mergeToolCompletionHandler: ((Bool) -> Void)?
 
     private var lineHeight: CGFloat {
         ceil(paneTextFont.ascender - paneTextFont.descender + paneTextFont.leading)
@@ -363,7 +382,14 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         AppLogger.info("Loading main view.")
         view = NSView()
 
-        let bar = NSStackView(views: [leftButton, rightButton, compareButton, saveButton])
+        gitFilePopup.identifier = NSUserInterfaceItemIdentifier("gitConflictFilePopup")
+        gitStatusLabel.identifier = NSUserInterfaceItemIdentifier("gitStatusLabel")
+        gitStatusLabel.textColor = .secondaryLabelColor
+        gitStatusLabel.lineBreakMode = .byTruncatingMiddle
+        gitStatusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        gitStatusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let bar = NSStackView(views: [leftButton, rightButton, compareButton, gitFilePopup, gitStatusLabel, saveButton])
         bar.orientation = .horizontal
         bar.spacing = 8
         bar.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
@@ -402,6 +428,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         rightButton.target = self; rightButton.action = #selector(chooseRight)
         compareButton.target = self; compareButton.action = #selector(compare)
         saveButton.target = self; saveButton.action = #selector(save)
+        gitFilePopup.target = self; gitFilePopup.action = #selector(selectGitConflictFile(_:))
         updateButtons()
         AppLogger.info("Main view loaded.")
     }
@@ -413,9 +440,81 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
 
     func load(left: URL, right: URL) {
         AppLogger.info("Received files to load left=\(left.path) right=\(right.path)")
+        resetGitSession()
+        saveTarget = .savePanel
         leftURL = left
         rightURL = right
         compare()
+    }
+
+    func loadGit(startPath: URL) {
+        AppLogger.info("Received git session start_path=\(startPath.path)")
+        resetGitSession()
+        document = nil
+        leftURL = nil
+        rightURL = nil
+        saveTarget = .savePanel
+        resetEditorStateAfterDocumentLoad()
+
+        var error: NSError?
+        var phases = [TimedPhase]()
+        let (discoveredRootPath, discoverPhase) = timed("discoverRepo") {
+            MDGitDiscoverRepository(startPath.path, &error)
+        }
+        phases.append(discoverPhase)
+        guard let rootPath = discoveredRootPath else {
+            logPerformance("loadGit", phases: phases, metadata: "failed=discover", minimumTotalMilliseconds: 0)
+            show(error?.localizedDescription ?? "No git repository found.")
+            updateButtons()
+            return
+        }
+
+        let (discoveredFiles, listPhase) = timed("listConflicts") {
+            MDGitConflictFiles(rootPath, &error)
+        }
+        phases.append(listPhase)
+        guard let files = discoveredFiles else {
+            logPerformance("loadGit", phases: phases, metadata: "failed=list", minimumTotalMilliseconds: 0)
+            show(error?.localizedDescription ?? "Could not read git conflicts.")
+            updateButtons()
+            return
+        }
+        logPerformance("loadGit", phases: phases, metadata: "files=\(files.count)", minimumTotalMilliseconds: 0)
+
+        gitRepositoryRoot = URL(fileURLWithPath: rootPath, isDirectory: true)
+        gitConflictFiles = files
+        if gitConflictFiles.isEmpty {
+            document = nil
+            gitStatusLabel.stringValue = "No conflicted files found."
+            render(preservingVerticalPosition: false)
+            updateButtons()
+            return
+        }
+
+        updateGitControls()
+        loadGitConflictFile(at: 0)
+    }
+
+    func loadGitMergeTool(base: URL, local: URL, remote: URL, merged: URL) {
+        AppLogger.info("Received git mergetool base=\(base.path) local=\(local.path) remote=\(remote.path) merged=\(merged.path)")
+        resetGitSession()
+        document = nil
+        leftURL = nil
+        rightURL = nil
+        saveTarget = .mergeToolOutput(merged)
+        gitStatusLabel.stringValue = "Resolving \(merged.lastPathComponent)"
+        resetEditorStateAfterDocumentLoad()
+
+        do {
+            var phases = try loadConflictDocument(from: merged)
+            phases.append(timed("render") { resetEditorStateAfterDocumentLoad() }.1)
+            phases.append(timed("updateButtons") { updateButtons() }.1)
+            logPerformance("loadMergeTool", phases: phases, metadata: "path=\(merged.path)", minimumTotalMilliseconds: 0)
+        } catch {
+            AppLogger.error("Git mergetool load failed: \(error.localizedDescription)")
+            show(error.localizedDescription)
+            updateButtons()
+        }
     }
 
     @objc private func chooseLeft() {
@@ -432,6 +531,8 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
 
     @objc private func compare() {
         guard let leftURL, let rightURL else { return }
+        resetGitSession()
+        saveTarget = .savePanel
         AppLogger.info("Starting compare left=\(leftURL.path) right=\(rightURL.path)")
         do {
             var error: NSError?
@@ -444,11 +545,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
             } else {
                 AppLogger.info("Compare succeeded blocks=\(document?.blocks.count ?? 0)")
             }
-            pendingMergedEdit = nil
-            pendingMergedSelection = nil
-            mergeUndoManager.removeAllActions(withTarget: self)
-            resetHorizontalOffsets()
-            render(preservingVerticalPosition: false)
+            resetEditorStateAfterDocumentLoad()
         } catch {
             AppLogger.error("Compare failed while reading files: \(error.localizedDescription)")
             show(error.localizedDescription)
@@ -460,42 +557,109 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         guard let document else { return }
         AppLogger.info("Starting save.")
         do {
-            let text = try document.mergedText()
-            let panel = NSSavePanel()
-            if panel.runModal() == .OK, let url = panel.url {
-                try text.write(to: url, atomically: true, encoding: String.Encoding.utf8)
-                AppLogger.info("Saved merged text to \(url.path) bytes=\(text.utf8.count)")
-            } else {
-                AppLogger.info("Save panel cancelled.")
+            var phases = [TimedPhase]()
+            let (text, mergePhase) = try timed("mergedText") { try document.mergedText() }
+            phases.append(mergePhase)
+            switch saveTarget {
+                case .savePanel:
+                    let panel = NSSavePanel()
+                    if panel.runModal() == .OK, let url = panel.url {
+                        phases.append(try timed("writeFile") {
+                            try text.write(to: url, atomically: true, encoding: String.Encoding.utf8)
+                        }.1)
+                        logPerformance("savePanel",
+                                       phases: phases,
+                                       metadata: "path=\(url.path) bytes=\(text.utf8.count)",
+                                       minimumTotalMilliseconds: 0)
+                        AppLogger.info("Saved merged text to \(url.path) bytes=\(text.utf8.count)")
+                    } else {
+                        AppLogger.info("Save panel cancelled.")
+                    }
+                case let .gitWorktreeFile(repositoryRoot, relativePath):
+                    let url = repositoryRoot.appendingPathComponent(relativePath)
+                    phases.append(try timed("writeFile") {
+                        try text.write(to: url, atomically: true, encoding: String.Encoding.utf8)
+                    }.1)
+                    var stageError: NSError?
+                    let (staged, stagePhase) = timed("gitStage") {
+                        MDGitStageFile(repositoryRoot.path, relativePath, &stageError)
+                    }
+                    phases.append(stagePhase)
+                    guard staged else {
+                        logPerformance("saveGit",
+                                       phases: phases,
+                                       metadata: "path=\(relativePath) bytes=\(text.utf8.count) failed=stage",
+                                       minimumTotalMilliseconds: 0)
+                        throw stageError ?? NSError(domain: "mcdiff", code: 6, userInfo: [
+                            NSLocalizedDescriptionKey: "Could not stage resolved file."
+                        ])
+                    }
+                    gitResolvedPaths.insert(relativePath)
+                    AppLogger.info("Saved and staged git file relative_path=\(relativePath) bytes=\(text.utf8.count)")
+                    phases.append(timed("updateGitControls") { updateGitControls() }.1)
+                    if let nextIndex = nextUnresolvedGitConflictIndex(after: selectedGitConflictIndex) {
+                        phases.append(timed("loadNextConflict") { loadGitConflictFile(at: nextIndex) }.1)
+                    } else {
+                        gitStatusLabel.stringValue = "All conflicts saved and staged."
+                    }
+                    logPerformance("saveGit",
+                                   phases: phases,
+                                   metadata: "path=\(relativePath) bytes=\(text.utf8.count)",
+                                   minimumTotalMilliseconds: 0)
+                case let .mergeToolOutput(url):
+                    phases.append(try timed("writeFile") {
+                        try text.write(to: url, atomically: true, encoding: String.Encoding.utf8)
+                    }.1)
+                    logPerformance("saveMergeTool",
+                                   phases: phases,
+                                   metadata: "path=\(url.path) bytes=\(text.utf8.count)",
+                                   minimumTotalMilliseconds: 0)
+                    AppLogger.info("Saved git mergetool output to \(url.path) bytes=\(text.utf8.count)")
+                    mergeToolCompletionHandler?(true)
             }
         } catch {
             AppLogger.error("Save failed: \(error.localizedDescription)")
             show(error.localizedDescription)
         }
+        updateButtons()
     }
 
     private func render(preservingVerticalPosition: Bool) {
         let previousVisibleOrigin = scroll.contentView.bounds.origin
-        updatePaneContentWidths()
-        paneTextClipViews = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, [PaneTextClipView]()) })
-        mergedTextView = nil
-        mergedTextRanges = []
-        stack.arrangedSubviews.forEach {
-            stack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
+        var phases = [TimedPhase]()
+        phases.append(timed("contentWidths") { updatePaneContentWidths() }.1)
+        phases.append(timed("clearViews") {
+            paneTextClipViews = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, [PaneTextClipView]()) })
+            mergedTextView = nil
+            mergedTextRanges = []
+            stack.arrangedSubviews.forEach {
+                stack.removeArrangedSubview($0)
+                $0.removeFromSuperview()
+            }
+        }.1)
+        guard let document else {
+            logPerformance("render", phases: phases, metadata: "document=none", minimumTotalMilliseconds: 75)
+            return
         }
-        guard let document else { return }
         // Blocks are rendered from the mutable bridge objects, so choosing a
         // side can update the model and redraw without rebuilding the diff.
-        let plan = renderPlan(for: document)
+        let (plan, planPhase) = timed("renderPlan") { renderPlan(for: document) }
+        phases.append(planPhase)
         mergedTextRanges = plan.mergedTextRanges
-        stack.addArrangedSubview(diffTableView(for: plan))
-        refreshPaneViewportWidths()
+        let (_, tablePhase) = timed("views") { stack.addArrangedSubview(diffTableView(for: plan)) }
+        phases.append(tablePhase)
+        phases.append(timed("refreshWidths") { refreshPaneViewportWidths() }.1)
         if preservingVerticalPosition {
-            scroll.contentView.scroll(to: NSPoint(x: 0, y: previousVisibleOrigin.y))
-            scroll.reflectScrolledClipView(scroll.contentView)
+            phases.append(timed("restoreScroll") {
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: previousVisibleOrigin.y))
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }.1)
         }
-        restorePendingMergedSelection()
+        phases.append(timed("restoreSelection") { restorePendingMergedSelection() }.1)
+        logPerformance("render",
+                       phases: phases,
+                       metadata: "blocks=\(document.blocks.count) rows=\(plan.totalRows) preserving=\(preservingVerticalPosition)",
+                       minimumTotalMilliseconds: 75)
     }
 
     private func diffTableView(for plan: RenderPlan) -> NSView {
@@ -882,6 +1046,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         guard let textView = notification.object as? NSTextView,
               textView === mergedTextView,
               let edit = pendingMergedEdit else { return }
+        let editStart = DispatchTime.now().uptimeNanoseconds
         pendingMergedEdit = nil
 
         guard let document, let firstBlockIndex = edit.blockIndexes.first, firstBlockIndex < document.blocks.count else {
@@ -901,6 +1066,10 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         let editedText = text.substring(with: newBlockRange)
         let editedLines = lines(fromEditedMergedText: editedText)
         let beforeSnapshots = snapshots(for: edit.blockIndexes)
+        let beforeLineCounts = Dictionary(uniqueKeysWithValues: edit.blockIndexes.compactMap { blockIndex -> (Int, Int)? in
+            guard blockIndex >= 0 && blockIndex < document.blocks.count else { return nil }
+            return (blockIndex, mergedOutputLineCount(for: document.blocks[blockIndex]))
+        })
         for (offset, blockIndex) in edit.blockIndexes.enumerated() where blockIndex < document.blocks.count {
             normalize(block: document.blocks[blockIndex], editedLines: offset == 0 ? editedLines : [])
         }
@@ -908,9 +1077,70 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         pendingMergedSelection = pendingSelection(from: textView.selectedRange(),
                                                   blockIndex: firstBlockIndex,
                                                   blockRange: newBlockRange)
-        AppLogger.info("Manually edited merged text affected_blocks=\(edit.blockIndexes.count)")
-        render(preservingVerticalPosition: true)
+        let shouldRender = mergedEditNeedsRender(edit: edit,
+                                                 beforeSnapshots: beforeSnapshots,
+                                                 beforeLineCounts: beforeLineCounts,
+                                                 editedLines: editedLines)
+        if shouldRender {
+            render(preservingVerticalPosition: true)
+        } else {
+            updateMergedTextRangesAfterInlineEdit(blockIndex: firstBlockIndex, newBlockRange: newBlockRange)
+        }
         updateButtons()
+        let elapsed = DispatchTime.now().uptimeNanoseconds - editStart
+        logPerformance("edit",
+                       phases: [TimedPhase(name: "total", milliseconds: Double(elapsed) / 1_000_000.0)],
+                       metadata: "affectedBlocks=\(edit.blockIndexes.count) replacementLength=\(replacementLength) newBlockLength=\(newBlockLength) blocks=\(document.blocks.count) rendered=\(shouldRender)",
+                       minimumTotalMilliseconds: 50)
+    }
+
+    private func mergedEditNeedsRender(edit: PendingMergedEdit,
+                                       beforeSnapshots: [MergedBlockSnapshot],
+                                       beforeLineCounts: [Int: Int],
+                                       editedLines: [String]) -> Bool {
+        guard edit.blockIndexes.count == 1,
+              let blockIndex = edit.blockIndexes.first,
+              let document,
+              blockIndex >= 0,
+              blockIndex < document.blocks.count else {
+            return true
+        }
+
+        let block = document.blocks[blockIndex]
+        if beforeLineCounts[blockIndex] != mergedOutputLineCount(for: block) {
+            return true
+        }
+
+        if let before = beforeSnapshots.first(where: { $0.blockIndex == blockIndex }),
+           before.pick != block.pick {
+            return true
+        }
+
+        let maxEditedWidth = editedLines.map(measuredLineWidth).max() ?? 0
+        if maxEditedWidth > sharedMaxContentWidth() + 1 {
+            return true
+        }
+
+        return false
+    }
+
+    private func updateMergedTextRangesAfterInlineEdit(blockIndex: Int, newBlockRange: NSRange) {
+        guard let rangeIndex = mergedTextRanges.firstIndex(where: { $0.blockIndex == blockIndex }) else { return }
+
+        let oldRange = mergedTextRanges[rangeIndex]
+        let delta = newBlockRange.length - oldRange.characterRange.length
+        mergedTextRanges[rangeIndex] = MergedBlockTextRange(blockIndex: oldRange.blockIndex,
+                                                            characterRange: newBlockRange,
+                                                            isEditable: oldRange.isEditable)
+        guard delta != 0, rangeIndex + 1 < mergedTextRanges.count else { return }
+
+        for index in (rangeIndex + 1)..<mergedTextRanges.count {
+            let range = mergedTextRanges[index]
+            mergedTextRanges[index] = MergedBlockTextRange(blockIndex: range.blockIndex,
+                                                           characterRange: NSRange(location: range.characterRange.location + delta,
+                                                                                   length: range.characterRange.length),
+                                                           isEditable: range.isEditable)
+        }
     }
 
     private func snapshots(for blockIndexes: [Int]) -> [MergedBlockSnapshot] {
@@ -1074,6 +1304,137 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         textView.scrollRangeToVisible(restored)
     }
 
+    @objc private func selectGitConflictFile(_ sender: NSPopUpButton) {
+        loadGitConflictFile(at: sender.indexOfSelectedItem)
+    }
+
+    private func loadGitConflictFile(at index: Int) {
+        guard index >= 0, index < gitConflictFiles.count, let gitRepositoryRoot else { return }
+
+        selectedGitConflictIndex = index
+        let file = gitConflictFiles[index]
+        let relativePath = file.relativePath ?? ""
+        let message = file.message ?? ""
+        var phases = [TimedPhase]()
+        phases.append(timed("updateGitControls") { updateGitControls() }.1)
+
+        guard file.isTextConflict else {
+            document = nil
+            saveTarget = .savePanel
+            gitStatusLabel.stringValue = message.isEmpty ? "Unsupported conflict: \(relativePath)" : message
+            resetEditorStateAfterDocumentLoad()
+            updateButtons()
+            return
+        }
+
+        let url = gitRepositoryRoot.appendingPathComponent(relativePath)
+        saveTarget = .gitWorktreeFile(repositoryRoot: gitRepositoryRoot, relativePath: relativePath)
+        gitStatusLabel.stringValue = gitResolvedPaths.contains(relativePath)
+            ? "Saved and staged: \(relativePath)"
+            : "Resolving \(relativePath)"
+
+        do {
+            phases.append(contentsOf: try loadConflictDocument(from: url))
+            phases.append(timed("render") { resetEditorStateAfterDocumentLoad() }.1)
+            logPerformance("loadGitConflictFile",
+                           phases: phases,
+                           metadata: "path=\(relativePath)",
+                           minimumTotalMilliseconds: 0)
+        } catch {
+            AppLogger.error("Git conflict load failed: \(error.localizedDescription)")
+            document = nil
+            gitStatusLabel.stringValue = "Could not load \(relativePath)"
+            render(preservingVerticalPosition: false)
+            show(error.localizedDescription)
+        }
+        updateButtons()
+    }
+
+    private func loadConflictDocument(from url: URL) throws -> [TimedPhase] {
+        var phases = [TimedPhase]()
+        let text: String
+        let readPhase: TimedPhase
+        do {
+            (text, readPhase) = try timed("readFile") {
+                try String(contentsOf: url, encoding: .utf8)
+            }
+        } catch {
+            throw NSError(domain: "mcdiff", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Could not read \(url.path) as UTF-8 text. Binary conflicts are not supported yet."
+            ])
+        }
+        phases.append(readPhase)
+
+        var error: NSError?
+        let (parsedDocument, parsePhase) = timed("parseConflict") {
+            MDMakeConflictDocument(text, &error)
+        }
+        phases.append(parsePhase)
+        guard let parsed = parsedDocument else {
+            throw error ?? NSError(domain: "mcdiff", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Could not parse conflict markers."
+            ])
+        }
+        guard parsed.blocks.contains(where: { $0.kind == .changed }) else {
+            throw NSError(domain: "mcdiff", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "No conflict markers found in \(url.path)."
+            ])
+        }
+        document = parsed
+        return phases
+    }
+
+    private func resetGitSession() {
+        gitRepositoryRoot = nil
+        gitConflictFiles = []
+        selectedGitConflictIndex = nil
+        gitResolvedPaths = []
+        gitFilePopup.removeAllItems()
+        gitStatusLabel.stringValue = ""
+    }
+
+    private func resetEditorStateAfterDocumentLoad() {
+        pendingMergedEdit = nil
+        pendingMergedSelection = nil
+        mergeUndoManager.removeAllActions(withTarget: self)
+        resetHorizontalOffsets()
+        render(preservingVerticalPosition: false)
+    }
+
+    private func updateGitControls() {
+        gitFilePopup.removeAllItems()
+        for file in gitConflictFiles {
+            gitFilePopup.addItem(withTitle: gitFileTitle(for: file))
+        }
+        if let selectedGitConflictIndex, selectedGitConflictIndex >= 0, selectedGitConflictIndex < gitConflictFiles.count {
+            gitFilePopup.selectItem(at: selectedGitConflictIndex)
+        }
+    }
+
+    private func gitFileTitle(for file: MDGitConflictFile) -> String {
+        let relativePath = file.relativePath ?? ""
+        if gitResolvedPaths.contains(relativePath) {
+            return "[saved] \(relativePath)"
+        }
+        if !file.isTextConflict {
+            return "[unsupported] \(relativePath)"
+        }
+        return relativePath
+    }
+
+    private func nextUnresolvedGitConflictIndex(after currentIndex: Int?) -> Int? {
+        guard !gitConflictFiles.isEmpty else { return nil }
+        let start = ((currentIndex ?? -1) + 1) % gitConflictFiles.count
+        for offset in 0..<gitConflictFiles.count {
+            let index = (start + offset) % gitConflictFiles.count
+            let file = gitConflictFiles[index]
+            if file.isTextConflict && !gitResolvedPaths.contains(file.relativePath ?? "") {
+                return index
+            }
+        }
+        return nil
+    }
+
     private func pickFile() -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -1082,9 +1443,34 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     }
 
     private func updateButtons() {
-        compareButton.isEnabled = leftURL != nil && rightURL != nil
-        saveButton.isEnabled = document?.canSave() == true
-        AppLogger.info("Updated buttons compare_enabled=\(compareButton.isEnabled) save_enabled=\(saveButton.isEnabled)")
+        let isGitRepositoryMode = gitRepositoryRoot != nil
+        let isMergeToolMode: Bool
+        if case .mergeToolOutput = saveTarget {
+            isMergeToolMode = true
+        } else {
+            isMergeToolMode = false
+        }
+
+        leftButton.isHidden = isGitRepositoryMode || isMergeToolMode
+        rightButton.isHidden = isGitRepositoryMode || isMergeToolMode
+        compareButton.isHidden = isGitRepositoryMode || isMergeToolMode
+        gitFilePopup.isHidden = !isGitRepositoryMode
+        gitStatusLabel.isHidden = !isGitRepositoryMode && !isMergeToolMode
+
+        compareButton.isEnabled = !isGitRepositoryMode && !isMergeToolMode && leftURL != nil && rightURL != nil
+
+        let canSaveDocument = document?.canSave() == true
+        switch saveTarget {
+            case .savePanel:
+                saveButton.title = isGitRepositoryMode ? "Save and Stage" : "Save Result"
+                saveButton.isEnabled = canSaveDocument
+            case let .gitWorktreeFile(_, relativePath):
+                saveButton.title = "Save and Stage"
+                saveButton.isEnabled = canSaveDocument && !gitResolvedPaths.contains(relativePath)
+            case .mergeToolOutput:
+                saveButton.title = "Save Merge"
+                saveButton.isEnabled = canSaveDocument
+        }
     }
 
     private func configureHorizontalScrollers() {
@@ -1179,6 +1565,10 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         return ceil(width) + 1
     }
 
+    private func sharedMaxContentWidth() -> CGFloat {
+        paneStates.values.map(\.contentWidth).max() ?? 0
+    }
+
     private func refreshPaneViewportWidths() {
         for pane in DiffPane.allCases {
             guard let state = paneStates[pane] else { continue }
@@ -1226,5 +1616,26 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         let alert = NSAlert()
         alert.messageText = message
         alert.runModal()
+    }
+
+    private func timed<T>(_ name: String, _ work: () throws -> T) rethrows -> (T, TimedPhase) {
+        let start = DispatchTime.now().uptimeNanoseconds
+        let result = try work()
+        let elapsed = DispatchTime.now().uptimeNanoseconds - start
+        return (result, TimedPhase(name: name, milliseconds: Double(elapsed) / 1_000_000.0))
+    }
+
+    private func logPerformance(_ operation: String,
+                                phases: [TimedPhase],
+                                metadata: String = "",
+                                minimumTotalMilliseconds: Double = 0) {
+        let total = phases.reduce(0) { $0 + $1.milliseconds }
+        guard total >= minimumTotalMilliseconds else { return }
+
+        let phaseText = phases
+            .map { "\($0.name)=\(String(format: "%.1f", $0.milliseconds))ms" }
+            .joined(separator: " ")
+        let metadataText = metadata.isEmpty ? "" : " \(metadata)"
+        AppLogger.info("PERF \(operation) total=\(String(format: "%.1f", total))ms\(metadataText) \(phaseText)")
     }
 }

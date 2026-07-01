@@ -11,21 +11,33 @@ enum AppLogLevel: String {
 
 enum AppLogger {
     static func initialize() {
+        #if MCD_LOGGING_DISABLED
+        return
+        #else
         _ = logDirectory
+        #endif
     }
 
     static func info(_ message: String,
                      file: String = #fileID,
                      function: String = #function,
                      line: Int = #line) {
+        #if MCD_LOGGING_DISABLED
+        return
+        #else
         write(.info, message, file: file, function: function, line: line)
+        #endif
     }
 
     static func error(_ message: String,
                       file: String = #fileID,
                       function: String = #function,
                       line: Int = #line) {
+        #if MCD_LOGGING_DISABLED
+        return
+        #else
         write(.error, message, file: file, function: function, line: line)
+        #endif
     }
 
     private static let logDirectory: URL = {

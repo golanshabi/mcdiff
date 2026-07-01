@@ -11,6 +11,12 @@ brew install libgit2
 make build
 ```
 
+For a build with Swift and C++ logging compiled out:
+
+```bash
+make build LOGGING=0
+```
+
 ## Terminal launcher
 
 After building, put the scripts directory on your PATH once:
@@ -22,6 +28,21 @@ mcdiff old.txt new.txt
 
 The command name is controlled by the launcher script's `COMMAND_NAME`
 variable, so it can be renamed without digging through the script body.
+
+Run `mcdiff` with no file arguments from inside a git repository to open the
+current conflicted files:
+
+```bash
+mcdiff
+```
+
+To use MacDiff as the default git mergetool:
+
+```bash
+git config --global merge.tool mcdiff
+git config --global mergetool.mcdiff.cmd 'mcdiff --merge-tool "$BASE" "$LOCAL" "$REMOTE" "$MERGED"'
+git config --global mergetool.mcdiff.trustExitCode true
+```
 
 ## Tests
 

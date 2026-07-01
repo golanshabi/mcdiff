@@ -13,7 +13,6 @@ void append(std::string& output, const std::vector<std::string>& lines) {
 }
 
 bool canMerge(const DiffDocument& doc) {
-    MCD_LOG_INFO("Checking merge readiness blocks=" + std::to_string(doc.blocks.size()));
     for (const auto& block : doc.blocks) {
         if (block.kind == DiffBlockKind::Invalid) {
             MCD_LOG_ERROR("Merge readiness failed: invalid block.");
@@ -23,11 +22,9 @@ bool canMerge(const DiffDocument& doc) {
             block.pick != PickSide::Left &&
             block.pick != PickSide::Right &&
             block.pick != PickSide::Manual) {
-            MCD_LOG_INFO("Merge readiness failed: changed block is unpicked.");
             return false;
         }
     }
-    MCD_LOG_INFO("Merge readiness succeeded.");
     return true;
 }
 

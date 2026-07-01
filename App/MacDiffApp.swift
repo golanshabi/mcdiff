@@ -1,11 +1,22 @@
 import AppKit
+import Darwin
 
 private let launcherCommandName = "mcdiff"
+
+private enum AppLaunchRequest {
+    case empty
+    case twoWayCompare(left: URL, right: URL)
+    case git(startPath: URL)
+    case gitMergeTool(base: URL, local: URL, remote: URL, merged: URL)
+    case invalid
+}
 
 @main
 final class MacDiffApp: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
     private let controller = MainWindowController()
+    private var isMergeToolMode = false
+    private var mergeToolCompleted = false
 
     static func main() {
         let app = NSApplication.shared
@@ -19,11 +30,15 @@ final class MacDiffApp: NSObject, NSApplicationDelegate {
         let args = Array(CommandLine.arguments.dropFirst())
         AppLogger.initialize()
         AppLogger.info("Application launched args_count=\(args.count)")
-        if args.count != 0 && args.count != 2 {
+        let request = parseLaunchRequest(args)
+        if case .invalid = request {
             AppLogger.error("Invalid command-line argument count: \(args.count)")
             print("""
             Usage:
+              \(launcherCommandName)
               \(launcherCommandName) <left-file> <right-file>
+              \(launcherCommandName) --git <path>
+              \(launcherCommandName) --merge-tool <base-file> <local-file> <remote-file> <merged-file>
             """)
             
             NSApp.terminate(nil)
@@ -44,14 +59,59 @@ final class MacDiffApp: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         AppLogger.info("Main window created and activated.")
 
-        if args.count == 2 {
-            AppLogger.info("Loading command-line files left=\(args[0]) right=\(args[1])")
-            controller.load(left: URL(fileURLWithPath: args[0]), right: URL(fileURLWithPath: args[1]))
+        switch request {
+            case .empty:
+                break
+            case let .twoWayCompare(left, right):
+                AppLogger.info("Loading command-line files left=\(left.path) right=\(right.path)")
+                controller.load(left: left, right: right)
+            case let .git(startPath):
+                AppLogger.info("Loading git session start_path=\(startPath.path)")
+                controller.loadGit(startPath: startPath)
+            case let .gitMergeTool(base, local, remote, merged):
+                isMergeToolMode = true
+                controller.mergeToolCompletionHandler = { [weak self] success in
+                    self?.mergeToolCompleted = success
+                    NSApp.terminate(nil)
+                }
+                AppLogger.info("Loading git mergetool merged_path=\(merged.path)")
+                controller.loadGitMergeTool(base: base, local: local, remote: remote, merged: merged)
+            case .invalid:
+                break
         }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        guard isMergeToolMode else { return }
+        exit(mergeToolCompleted ? EXIT_SUCCESS : EXIT_FAILURE)
+    }
+
+    private func parseLaunchRequest(_ args: [String]) -> AppLaunchRequest {
+        if args.isEmpty {
+            return .empty
+        }
+
+        if args.count == 2, args[0] == "--git" {
+            return .git(startPath: URL(fileURLWithPath: args[1]))
+        }
+
+        if args.count == 5 && (args[0] == "--merge-tool" || args[0] == "--mergetool") {
+            return .gitMergeTool(base: URL(fileURLWithPath: args[1]),
+                                 local: URL(fileURLWithPath: args[2]),
+                                 remote: URL(fileURLWithPath: args[3]),
+                                 merged: URL(fileURLWithPath: args[4]))
+        }
+
+        if args.count == 2 {
+            return .twoWayCompare(left: URL(fileURLWithPath: args[0]),
+                                  right: URL(fileURLWithPath: args[1]))
+        }
+
+        return .invalid
     }
 
     private func configureMainMenu() {

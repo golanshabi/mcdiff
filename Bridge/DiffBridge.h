@@ -19,11 +19,21 @@ typedef NS_ENUM(NSInteger, MDPickSide) { MDPickSideUnpicked, MDPickSideLeft, MDP
 - (NSString *)mergedText:(NSError **)error;
 @end
 
+@interface MDGitConflictFile : NSObject
+@property (copy) NSString *relativePath;
+@property BOOL isTextConflict;
+@property (copy) NSString *message;
+@end
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 void MDSetLogDirectory(NSString *directoryPath);
 MDDocument *MDMakeDiff(NSString *leftText, NSString *rightText, NSError **error);
+MDDocument *MDMakeConflictDocument(NSString *worktreeText, NSError **error);
+NSString *MDGitDiscoverRepository(NSString *startPath, NSError **error);
+NSArray<MDGitConflictFile *> *MDGitConflictFiles(NSString *repositoryRoot, NSError **error);
+BOOL MDGitStageFile(NSString *repositoryRoot, NSString *relativePath, NSError **error);
 #ifdef __cplusplus
 }
 #endif

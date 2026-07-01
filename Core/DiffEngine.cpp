@@ -91,10 +91,6 @@ struct State {
 
 int onHunk(const git_diff_delta*, const git_diff_hunk* hunk, void* payload) {
     auto* state = static_cast<State*>(payload);
-    MCD_LOG_INFO("Processing hunk old_start=" + std::to_string(hunk->old_start) +
-                 " old_lines=" + std::to_string(hunk->old_lines) +
-                 " new_start=" + std::to_string(hunk->new_start) +
-                 " new_lines=" + std::to_string(hunk->new_lines));
     // With zero context lines, libgit2 reports only changed regions. The cursor
     // gap before each hunk is therefore the unchanged block we need to preserve.
     addEqual(state->doc, state->left, state->right, state->leftCursor, state->rightCursor,

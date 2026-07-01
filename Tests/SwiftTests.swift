@@ -38,6 +38,10 @@ private func textViews(in view: NSView) -> [NSTextView] {
     allSubviews(of: view).compactMap { $0 as? NSTextView }
 }
 
+private func popUpButtons(in view: NSView) -> [NSPopUpButton] {
+    allSubviews(of: view).compactMap { $0 as? NSPopUpButton }
+}
+
 private func views(in view: NSView, identifier: String) -> [NSView] {
     allSubviews(of: view).filter { $0.identifier?.rawValue == identifier }
 }
@@ -109,6 +113,56 @@ private func sendSliderAction(_ slider: NSSlider) {
         return
     }
     _ = slider.sendAction(action, to: slider.target)
+}
+
+@discardableResult
+private func runGit(_ arguments: [String],
+                    in directory: URL,
+                    allowFailure: Bool = false) throws -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = ["git"] + arguments
+    process.currentDirectoryURL = directory
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = output
+    try process.run()
+    process.waitUntilExit()
+
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    let text = String(data: data, encoding: .utf8) ?? ""
+    if process.terminationStatus != 0 && !allowFailure {
+        throw NSError(domain: "SwiftTests", code: Int(process.terminationStatus), userInfo: [
+            NSLocalizedDescriptionKey: "git \(arguments.joined(separator: " ")) failed: \(text)"
+        ])
+    }
+    return text
+}
+
+private func makeConflictedRepository(_ name: String) throws -> URL {
+    let repo = try temporaryDirectory(name)
+    try runGit(["init"], in: repo)
+    try runGit(["config", "user.email", "mcdiff-tests@example.com"], in: repo)
+    try runGit(["config", "user.name", "MacDiff Tests"], in: repo)
+
+    let file = repo.appendingPathComponent("conflict.txt")
+    try "base\n".write(to: file, atomically: true, encoding: .utf8)
+    try runGit(["add", "conflict.txt"], in: repo)
+    try runGit(["commit", "-m", "base"], in: repo)
+    let baseBranch = try runGit(["rev-parse", "--abbrev-ref", "HEAD"], in: repo)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    try runGit(["checkout", "-b", "ours"], in: repo)
+    try "ours\n".write(to: file, atomically: true, encoding: .utf8)
+    try runGit(["commit", "-am", "ours"], in: repo)
+
+    try runGit(["checkout", "-b", "theirs", baseBranch], in: repo)
+    try "theirs\n".write(to: file, atomically: true, encoding: .utf8)
+    try runGit(["commit", "-am", "theirs"], in: repo)
+
+    try runGit(["checkout", "ours"], in: repo)
+    _ = try runGit(["merge", "theirs"], in: repo, allowFailure: true)
+    return repo
 }
 
 private func replaceText(in textView: NSTextView,
@@ -286,6 +340,7 @@ private func testBridgeDiffMergeAndErrors() throws {
     let emptyManualMerged = try document.mergedText()
     assertTrue(emptyManualMerged == "one\nthree\n", "bridge merge after empty manual edit output")
 
+    #if !MCD_LOGGING_DISABLED
     guard let testLogDirectory else {
         assertTrue(false, "test log directory is available")
         return
@@ -293,6 +348,73 @@ private func testBridgeDiffMergeAndErrors() throws {
     let cppLog = try String(contentsOf: testLogDirectory.appendingPathComponent("cpp.log"), encoding: .utf8)
     assertTrue(cppLog.contains("Bridge requested diff"), "cpp.log contains bridge diff message")
     assertTrue(cppLog.contains("Merged text bytes"), "cpp.log contains merge message")
+    #endif
+}
+
+private func testBridgeConflictDocumentParsing() throws {
+    var error: NSError?
+    guard let document = MDMakeConflictDocument("""
+    before
+    <<<<<<< HEAD
+    ours
+    ||||||| base
+    base
+    =======
+    theirs
+    >>>>>>> branch
+    after
+
+    """, &error) else {
+        assertTrue(false, "bridge parses conflict document")
+        return
+    }
+
+    assertTrue(error == nil, "conflict document parse has no error")
+    assertTrue(document.blocks.count == 3, "conflict document has expected block count")
+    assertTrue(document.blocks[1].kind == .changed, "conflict document creates changed block")
+    assertTrue(document.blocks[1].leftLines == ["ours"], "conflict document left side")
+    assertTrue(document.blocks[1].rightLines == ["theirs"], "conflict document right side ignores diff3 base")
+    assertTrue(document.canSave() == false, "conflict document requires resolution")
+
+    document.blocks[1].pick = .manual
+    document.blocks[1].manualLines = ["resolved"]
+    let merged = try document.mergedText()
+    assertTrue(merged == "before\nresolved\nafter\n", "conflict document merged output removes markers")
+}
+
+private func testGitBridgeListsAndStagesConflict() throws {
+    let repo = try makeConflictedRepository("git-bridge-conflict")
+    let nested = repo.appendingPathComponent("subdir", isDirectory: true)
+    try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+
+    var error: NSError?
+    guard let rootPath = MDGitDiscoverRepository(nested.path, &error) else {
+        assertTrue(false, "git repository is discovered")
+        return
+    }
+    assertTrue(URL(fileURLWithPath: rootPath).standardizedFileURL.path == repo.standardizedFileURL.path,
+               "git discovery returns repo root")
+
+    guard let conflictFiles = MDGitConflictFiles(rootPath, &error) else {
+        assertTrue(false, "git conflicts are listed")
+        return
+    }
+    assertTrue(conflictFiles.contains { ($0.relativePath ?? "") == "conflict.txt" },
+               "git conflict list includes conflicted path")
+
+    let conflictFile = repo.appendingPathComponent("conflict.txt")
+    var text = try String(contentsOf: conflictFile, encoding: .utf8)
+    assertTrue(text.contains("<<<<<<<"), "test repo has conflict markers before resolution")
+    try "resolved\n".write(to: conflictFile, atomically: true, encoding: .utf8)
+
+    var stageError: NSError?
+    assertTrue(MDGitStageFile(rootPath, "conflict.txt", &stageError), "resolved conflict stages successfully")
+    assertTrue(stageError == nil, "staging has no error")
+    text = try String(contentsOf: conflictFile, encoding: .utf8)
+    assertTrue(!text.contains("<<<<<<<"), "resolved worktree file has no conflict markers")
+    let unmerged = try runGit(["ls-files", "-u"], in: repo)
+    assertTrue(unmerged.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               "staging resolved file clears unmerged index entries")
 }
 
 private func testMainWindowInitialState() {
@@ -578,6 +700,51 @@ private func testManualMergedEditEnablesSaveAndShowsManualText() throws {
     assertTrue(text(in: controller.view, identifier: "mergedSide").contains("manual"), "manual text appears in merged pane")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "mergedSide"), redAtLeast: 0.4, blueAtLeast: 0.4),
                "manual merged block uses a distinct middle-pane color")
+}
+
+private func testSameLineManualMergedEditDoesNotRerenderTextView() throws {
+    let files = try temporaryDirectory("manual-edit-no-rerender")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft side has enough width for manual edits\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright side has enough width for manual edits\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let initialMerged = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists before manual edit")
+        return
+    }
+
+    replaceText(in: initialMerged,
+                range: NSRange(location: ("alpha\n" as NSString).length, length: 0),
+                with: "manual",
+                "first manual edit is accepted")
+    layout(testWindow, controller)
+
+    guard let afterFirstEdit = textViews(in: controller.view, identifier: "mergedSide").first,
+          let manualRange = nsRange(of: "manual", in: afterFirstEdit.string) else {
+        assertTrue(false, "manual text is rendered after first edit")
+        return
+    }
+
+    replaceText(in: afterFirstEdit,
+                range: NSRange(location: NSMaxRange(manualRange), length: 0),
+                with: "!",
+                "same-line manual edit is accepted")
+    layout(testWindow, controller)
+
+    guard let afterSecondEdit = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists after second edit")
+        return
+    }
+    assertTrue(afterSecondEdit === afterFirstEdit, "same-line manual edit does not rebuild the text view")
+    assertTrue(afterSecondEdit.string.contains("manual!"), "same-line manual edit updates text in place")
 }
 
 private func testManualMergedEditUndoRedoRestoresBlockState() throws {
@@ -1271,12 +1438,96 @@ private func testLongLineSlidersMoveAllPanesTogetherWithoutChangingPaneWidths() 
                "right horizontal offset survives pick re-render")
 }
 
+private func testMainWindowGitMergeToolSaveWritesMergedPath() throws {
+    let files = try temporaryDirectory("git-mergetool-save")
+    let base = files.appendingPathComponent("base.txt")
+    let local = files.appendingPathComponent("local.txt")
+    let remote = files.appendingPathComponent("remote.txt")
+    let merged = files.appendingPathComponent("merged.txt")
+    try "base\n".write(to: base, atomically: true, encoding: .utf8)
+    try "ours\n".write(to: local, atomically: true, encoding: .utf8)
+    try "theirs\n".write(to: remote, atomically: true, encoding: .utf8)
+    try """
+    before
+    <<<<<<< HEAD
+    ours
+    =======
+    theirs
+    >>>>>>> branch
+    after
+
+    """.write(to: merged, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    var completed: Bool?
+    controller.mergeToolCompletionHandler = { completed = $0 }
+    controller.loadGitMergeTool(base: base, local: local, remote: remote, merged: merged)
+    layout(testWindow, controller)
+
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save Merge" }?.isEnabled == false,
+               "mergetool save starts disabled before resolution")
+    assertTrue(labels(in: controller.view).contains { $0.identifier?.rawValue == "gitStatusLabel" && !$0.isHidden },
+               "mergetool shows git status")
+    assertTrue(text(in: controller.view, identifier: "leftSide").contains("ours"), "mergetool renders local side")
+    assertTrue(text(in: controller.view, identifier: "rightSide").contains("theirs"), "mergetool renders remote side")
+
+    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    layout(testWindow, controller)
+    let save = buttons(in: controller.view).first { $0.title == "Save Merge" }
+    assertTrue(save?.isEnabled == true, "mergetool save enables after resolution")
+    save?.performClick(nil)
+
+    assertTrue(completed == true, "mergetool reports successful completion after save")
+    let saved = try String(contentsOf: merged, encoding: .utf8)
+    assertTrue(saved == "before\ntheirs\nafter\n", "mergetool writes resolved output to merged path")
+}
+
+private func testMainWindowGitModeSavesAndStagesSelectedConflict() throws {
+    let repo = try makeConflictedRepository("git-ui-conflict")
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.loadGit(startPath: repo)
+    layout(testWindow, controller)
+
+    assertTrue(popUpButtons(in: controller.view).contains { $0.identifier?.rawValue == "gitConflictFilePopup" && !$0.isHidden },
+               "git mode shows conflict file popup")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save and Stage" }?.isEnabled == false,
+               "git save starts disabled before resolution")
+    assertTrue(text(in: controller.view, identifier: "leftSide").contains("ours"), "git mode renders ours side")
+    assertTrue(text(in: controller.view, identifier: "rightSide").contains("theirs"), "git mode renders theirs side")
+
+    buttons(in: controller.view).first { $0.title == "Use Left" }?.performClick(nil)
+    layout(testWindow, controller)
+    let save = buttons(in: controller.view).first { $0.title == "Save and Stage" }
+    assertTrue(save?.isEnabled == true, "git save enables after resolution")
+    save?.performClick(nil)
+    layout(testWindow, controller)
+
+    let saved = try String(contentsOf: repo.appendingPathComponent("conflict.txt"), encoding: .utf8)
+    assertTrue(saved == "ours\n", "git mode writes resolved worktree file")
+    let unmerged = try runGit(["ls-files", "-u"], in: repo)
+    assertTrue(unmerged.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               "git mode stages resolved file")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save and Stage" }?.isEnabled == false,
+               "resolved git file cannot be saved again immediately")
+}
+
 @main
 private enum SwiftTests {
     static func main() {
         do {
+            #if !MCD_LOGGING_DISABLED
             try testLoggerCreatesRunFolderAndPrunesOldRuns()
+            #endif
             try testBridgeDiffMergeAndErrors()
+            try testBridgeConflictDocumentParsing()
+            try testGitBridgeListsAndStagesConflict()
             testMainWindowInitialState()
             try testMainWindowIdenticalFilesEnableSaveWithoutPick()
             try testMainWindowLoadsAndPicksDiff()
@@ -1286,6 +1537,7 @@ private enum SwiftTests {
             try testMergedPaneTextBecomesSelectableAfterPick()
             try testSidePickUndoRedoRestoresMergedState()
             try testManualMergedEditEnablesSaveAndShowsManualText()
+            try testSameLineManualMergedEditDoesNotRerenderTextView()
             try testManualMergedEditUndoRedoRestoresBlockState()
             try testUndoPreservesCaretInsideChangedBlock()
             try testManualMergedEditNormalizesToRightPick()
@@ -1304,6 +1556,8 @@ private enum SwiftTests {
             try testPickingOneBlockLeavesOtherMergedBlocksBlankAndUnsaved()
             try testPickingSmallerConflictKeepsLeftAndRightRowsVisible()
             try testLongLineSlidersMoveAllPanesTogetherWithoutChangingPaneWidths()
+            try testMainWindowGitMergeToolSaveWritesMergedPath()
+            try testMainWindowGitModeSavesAndStagesSelectedConflict()
         } catch {
             fputs("Swift test failed: \(error.localizedDescription)\n", stderr)
             exit(1)

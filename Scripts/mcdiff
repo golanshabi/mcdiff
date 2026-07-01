@@ -3,6 +3,7 @@ set -euo pipefail
 
 COMMAND_NAME="mcdiff"
 APP_BUNDLE="$(cd "$(dirname "$0")/.." && pwd)/build/mcdiff.app"
+APP_EXECUTABLE="${APP_BUNDLE}/Contents/MacOS/mcdiff"
 
 absolute_path() {
   local input="$1"
@@ -18,10 +19,34 @@ absolute_path() {
   printf '%s/%s\n' "$(cd "${directory}" && pwd -P)" "${basename}"
 }
 
-if [ "$#" -ne 2 ]; then
+usage() {
   echo "Usage:"
+  echo "  ${COMMAND_NAME}"
   echo "  ${COMMAND_NAME} <left-file> <right-file>"
-  exit 1
+  echo "  ${COMMAND_NAME} --merge-tool <base-file> <local-file> <remote-file> <merged-file>"
+}
+
+if [ "$#" -eq 0 ]; then
+  open "${APP_BUNDLE}" --args --git "$(pwd -P)"
+  exit 0
 fi
 
-open "${APP_BUNDLE}" --args "$(absolute_path "$1")" "$(absolute_path "$2")"
+if [ "$#" -eq 2 ]; then
+  open "${APP_BUNDLE}" --args "$(absolute_path "$1")" "$(absolute_path "$2")"
+  exit 0
+fi
+
+if [ "$#" -eq 5 ] && [ "$1" = "--merge-tool" ]; then
+  "${APP_EXECUTABLE}" --merge-tool "$(absolute_path "$2")" "$(absolute_path "$3")" "$(absolute_path "$4")" "$(absolute_path "$5")"
+  exit $?
+fi
+
+if [ "$#" -eq 5 ] && [ "$1" = "--mergetool" ]; then
+  "${APP_EXECUTABLE}" --merge-tool "$(absolute_path "$2")" "$(absolute_path "$3")" "$(absolute_path "$4")" "$(absolute_path "$5")"
+  exit $?
+fi
+
+if [ "$#" -ne 2 ]; then
+  usage
+  exit 1
+fi
