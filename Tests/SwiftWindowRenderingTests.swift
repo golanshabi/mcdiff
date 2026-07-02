@@ -42,7 +42,7 @@ func testMainWindowIdenticalFilesEnableSaveWithoutPick() throws {
     assertTrue(text(in: controller.view, identifier: "leftSide").contains("alpha"), "identical files render left pane")
     assertTrue(text(in: controller.view, identifier: "mergedSide").contains("alpha"), "identical files render merged pane")
     assertTrue(text(in: controller.view, identifier: "rightSide").contains("alpha"), "identical files render right pane")
-    assertTrue(buttons(in: controller.view).contains { $0.title == "Use Left" } == false, "identical files have no pick buttons")
+    assertTrue(pickButtons(in: controller.view).isEmpty, "identical files have no pick buttons")
 
     let save = buttons(in: controller.view).first { $0.title == "Save Result" }
     assertTrue(save?.isEnabled == true, "identical files can save immediately")
@@ -72,9 +72,29 @@ func testMainWindowLoadsAndPicksDiff() throws {
     assertTrue(!textLines(in: controller.view, identifier: "mergedSide").contains("right"), "merged pane starts without either side picked")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "mergedSide"), redAtLeast: 0.8, greenAtLeast: 0.3), "unresolved merged pane uses fourth color")
 
-    let useRight = buttons(in: controller.view).first { $0.title == "Use Right" }
+    let useLeft = pickButton(in: controller.view, picksLeft: true)
+    let useRight = pickButton(in: controller.view, picksLeft: false)
+    assertTrue(useLeft?.title == "→", "left pick button points toward the middle pane")
     assertTrue(useRight != nil, "rendered Use Right button")
-    useRight?.performClick(nil)
+    assertTrue(useRight?.title == "←", "right pick button points toward the middle pane")
+    guard let leftPane = views(in: controller.view, identifier: "leftSide").first,
+          let mergedPane = views(in: controller.view, identifier: "mergedSide").first,
+          let rightPane = views(in: controller.view, identifier: "rightSide").first,
+          let useLeft,
+          let useRight else {
+        assertTrue(false, "diff panes and arrow buttons are rendered")
+        return
+    }
+    let leftPaneFrame = frame(of: leftPane, in: controller.view)
+    let mergedPaneFrame = frame(of: mergedPane, in: controller.view)
+    let rightPaneFrame = frame(of: rightPane, in: controller.view)
+    let useLeftFrame = frame(of: useLeft, in: controller.view)
+    let useRightFrame = frame(of: useRight, in: controller.view)
+    assertTrue(useLeftFrame.midX > leftPaneFrame.maxX && useLeftFrame.midX < mergedPaneFrame.minX,
+               "left arrow sits between the left and middle panes")
+    assertTrue(useRightFrame.midX > mergedPaneFrame.maxX && useRightFrame.midX < rightPaneFrame.minX,
+               "right arrow sits between the middle and right panes")
+    useRight.performClick(nil)
     layout(testWindow, controller)
 
     let save = buttons(in: controller.view).first { $0.title == "Save Result" }
@@ -105,19 +125,19 @@ func testDeletionDiffRequiresExplicitPickAndUpdatesMergedPane() {
 
     let save = buttons(in: controller.view).first { $0.title == "Save Result" }
     assertTrue(save?.isEnabled == false, "deletion diff requires an explicit pick before saving")
-    assertTrue(buttons(in: controller.view).contains { $0.title == "Use Left" }, "deletion diff renders Use Left")
-    assertTrue(buttons(in: controller.view).contains { $0.title == "Use Right" }, "deletion diff renders Use Right")
+    assertTrue(pickButton(in: controller.view, picksLeft: true)?.title == "→", "deletion diff renders left-to-middle arrow")
+    assertTrue(pickButton(in: controller.view, picksLeft: false)?.title == "←", "deletion diff renders right-to-middle arrow")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "leftSide"), redAtLeast: 0.8), "deletion diff shows red deletion side")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "rightSide"), greenAtLeast: 0.45), "deletion diff shows green addition side")
     assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "deletion merged pane starts without unresolved placeholder text")
 
-    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    pickButton(in: controller.view, picksLeft: false)?.performClick(nil)
     layout(testWindow, controller)
     assertTrue(!textLines(in: controller.view, identifier: "mergedSide").contains("d"), "right pick removes deleted line from merged pane")
     assertTrue(labelString(in: controller.view, identifier: "mergedSideLineNumbers").isEmpty, "picked deletion still does not render merged line numbers")
     assertTrue(save?.isEnabled == false, "other unpicked block keeps save disabled")
 
-    buttons(in: controller.view).first { $0.title == "Use Left" }?.performClick(nil)
+    pickButton(in: controller.view, picksLeft: true)?.performClick(nil)
     layout(testWindow, controller)
     assertTrue(textLines(in: controller.view, identifier: "mergedSide").contains("d"), "left pick keeps deleted line in merged pane")
 }
@@ -204,7 +224,7 @@ func testMergedPaneTextBecomesSelectableAfterPick() throws {
     assertTrue(unpicked?.isSelectable == true, "merged pane uses native selection before pick")
     assertTrue(unpicked?.isEditable == true, "merged pane is editable before pick")
 
-    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    pickButton(in: controller.view, picksLeft: false)?.performClick(nil)
     layout(testWindow, controller)
 
     let picked = textViews(in: controller.view, identifier: "mergedSide").first
@@ -228,7 +248,7 @@ func testSidePickUndoRedoRestoresMergedState() throws {
     controller.load(left: left, right: right)
     layout(testWindow, controller)
 
-    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    pickButton(in: controller.view, picksLeft: false)?.performClick(nil)
     layout(testWindow, controller)
 
     assertTrue(text(in: controller.view, identifier: "mergedSide").contains("right"),

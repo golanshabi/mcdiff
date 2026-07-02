@@ -48,20 +48,19 @@ extension MainWindowController {
         row.orientation = .horizontal
         row.spacing = 0
 
+        let leftPane = paneColumnView(for: plan, pane: .left)
+        let mergedPane = paneColumnView(for: plan, pane: .merged)
+        let rightPane = paneColumnView(for: plan, pane: .right)
+
+        row.addArrangedSubview(leftPane)
         row.addArrangedSubview(pickButtonColumn(for: plan.blockSlots, picksLeft: true))
-
-        let panes = NSStackView()
-        panes.orientation = .horizontal
-        panes.spacing = 0
-        panes.distribution = .fillEqually
-        panes.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        panes.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for pane in DiffPane.allCases {
-            panes.addArrangedSubview(paneColumnView(for: plan, pane: pane))
-        }
-        row.addArrangedSubview(panes)
-
+        row.addArrangedSubview(mergedPane)
         row.addArrangedSubview(pickButtonColumn(for: plan.blockSlots, picksLeft: false))
+        row.addArrangedSubview(rightPane)
+        NSLayoutConstraint.activate([
+            leftPane.widthAnchor.constraint(equalTo: mergedPane.widthAnchor),
+            rightPane.widthAnchor.constraint(equalTo: mergedPane.widthAnchor)
+        ])
         return row
     }
 
@@ -83,15 +82,20 @@ extension MainWindowController {
         view.heightAnchor.constraint(equalToConstant: CGFloat(rowCount) * lineHeight).isActive = true
 
         if block.kind == .changed {
-            let button = PickButton(title: picksLeft ? "Use Left" : "Use Right", target: self, action: #selector(pick(_:)))
+            let button = PickButton(title: picksLeft ? "→" : "←", target: self, action: #selector(pick(_:)))
             button.block = block
             button.picksLeft = picksLeft
             button.controlSize = .small
+            button.font = NSFont.systemFont(ofSize: 18, weight: .medium)
+            button.toolTip = picksLeft ? "Use Left" : "Use Right"
+            button.setAccessibilityLabel(picksLeft ? "Use Left" : "Use Right")
             button.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(button)
             NSLayoutConstraint.activate([
                 button.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-                button.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+                button.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+                button.widthAnchor.constraint(equalToConstant: 30),
+                button.heightAnchor.constraint(equalToConstant: 24)
             ])
         }
 

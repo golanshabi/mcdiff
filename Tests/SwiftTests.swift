@@ -24,6 +24,7 @@ private enum SwiftTests {
             try testUndoPreservesCaretInsideChangedBlock()
             try testManualMergedEditNormalizesToRightPick()
             try testManualMergedEditCanBreakLineAtEndOfChangedLine()
+            try testRebreakingLineMergedFromChangedAndEqualRowsRestoresBoundary()
             try testAllBlankRowsInDeletionBlockAreEditable()
             try testMergedPaneAcceptsMultiLinePasteText()
             try testMergedEditAllowsEqualRows()

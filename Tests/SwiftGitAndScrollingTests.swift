@@ -64,7 +64,7 @@ func testLongLineSlidersMoveAllPanesTogetherWithoutChangingPaneWidths() throws {
     assertTrue(paneWidths(in: controller.view, identifier: "rightSide") == rightWidthsBefore,
                "right pane visible widths remain constant after horizontal scroll")
 
-    buttons(in: controller.view).first { $0.title == "Use Left" }?.performClick(nil)
+    pickButton(in: controller.view, picksLeft: true)?.performClick(nil)
     layout(testWindow, controller)
 
     assertTrue(text(in: controller.view, identifier: "mergedSide").contains(longLine),
@@ -113,7 +113,7 @@ func testMainWindowGitMergeToolSaveWritesMergedPath() throws {
     assertTrue(text(in: controller.view, identifier: "leftSide").contains("ours"), "mergetool renders local side")
     assertTrue(text(in: controller.view, identifier: "rightSide").contains("theirs"), "mergetool renders remote side")
 
-    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    pickButton(in: controller.view, picksLeft: false)?.performClick(nil)
     layout(testWindow, controller)
     let save = buttons(in: controller.view).first { $0.title == "Save Merge" }
     assertTrue(save?.isEnabled == true, "mergetool save enables after resolution")
@@ -320,7 +320,7 @@ func testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave() throws {
     assertTrue(!fullyExpandedLines.contains("⋯"),
                "full expansion removes the collapsed context band")
 
-    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    pickButton(in: controller.view, picksLeft: false)?.performClick(nil)
     layout(testWindow, controller)
     buttons(in: controller.view).first { $0.title == "Save Merge" }?.performClick(nil)
 
@@ -350,7 +350,7 @@ func testMainWindowGitModeSavesAndStagesSelectedConflict() throws {
     assertTrue(text(in: controller.view, identifier: "leftSide").contains("ours"), "git mode renders ours side")
     assertTrue(text(in: controller.view, identifier: "rightSide").contains("theirs"), "git mode renders theirs side")
 
-    buttons(in: controller.view).first { $0.title == "Use Left" }?.performClick(nil)
+    pickButton(in: controller.view, picksLeft: true)?.performClick(nil)
     layout(testWindow, controller)
     let save = buttons(in: controller.view).first { $0.title == "Save and Stage" }
     assertTrue(save?.isEnabled == true, "git save enables after resolution")

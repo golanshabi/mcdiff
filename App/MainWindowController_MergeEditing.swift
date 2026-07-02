@@ -1,6 +1,20 @@
 import AppKit
 
 extension MainWindowController {
+    struct BoundaryReclaim {
+        let blockIndex: Int
+        let nextBlockIndex: Int
+        let reclaimedLines: [String]
+        let suffixStartOffset: Int
+    }
+
+    struct BoundaryDeletion {
+        let blockIndex: Int
+        let nextBlockIndex: Int
+        let previousLines: [String]
+        let nextLines: [String]
+    }
+
     @objc func undo(_ sender: Any?) {
         performUndo()
     }
@@ -81,15 +95,30 @@ extension MainWindowController {
 
         let editedText = text.substring(with: newBlockRange)
         let editedLines = lines(fromEditedMergedText: editedText)
-        let beforeSnapshots = snapshots(for: edit.blockIndexes)
+        let boundaryDeletion = followingBlockBoundaryDeletion(edit: edit,
+                                                              editedLines: editedLines)
+        let boundaryReclaim = followingBlockBoundaryReclaim(edit: edit,
+                                                            editedLines: editedLines)
+        var snapshotBlockIndexes = edit.blockIndexes
+        if let boundaryReclaim {
+            snapshotBlockIndexes.append(boundaryReclaim.nextBlockIndex)
+        }
+        let beforeSnapshots = snapshots(for: snapshotBlockIndexes)
         let beforeRowCounts = Dictionary(uniqueKeysWithValues: edit.blockIndexes.compactMap { blockIndex -> (Int, Int)? in
             guard let rows = renderedBlockRows[blockIndex] else { return nil }
             return (blockIndex, rows.rowCount)
         })
-        for (offset, range) in edit.ranges.enumerated() where range.blockIndex < document.blocks.count {
-            normalize(block: document.blocks[range.blockIndex],
-                      editedLines: offset == 0 ? editedLines : [],
-                      editedRange: offset == 0 ? range : nil)
+        if let boundaryDeletion {
+            applyFollowingBlockBoundaryDeletion(boundaryDeletion)
+        } else {
+            for (offset, range) in edit.ranges.enumerated() where range.blockIndex < document.blocks.count {
+                normalize(block: document.blocks[range.blockIndex],
+                          editedLines: offset == 0 ? editedLines : [],
+                          editedRange: offset == 0 ? range : nil)
+            }
+        }
+        if let boundaryReclaim {
+            applyFollowingBlockBoundaryReclaim(boundaryReclaim, editedLines: editedLines)
         }
         registerMergedUndo(before: beforeSnapshots, actionName: "Edit", restoreSelection: edit.undoSelection)
         let firstEditedRange = edit.ranges[0]
@@ -97,9 +126,14 @@ extension MainWindowController {
                                                   blockIndex: firstEditedRange.blockIndex,
                                                   sourceLineRange: firstEditedRange.sourceLineRange,
                                                   blockRange: newBlockRange)
-        let shouldRender = mergedEditNeedsRender(edit: edit,
-                                                 beforeRowCounts: beforeRowCounts,
-                                                 editedLines: editedLines)
+        if let boundaryReclaim {
+            movePendingSelectionIntoReclaimedBlockIfNeeded(boundaryReclaim)
+        }
+        let shouldRender = boundaryDeletion != nil ||
+            boundaryReclaim != nil ||
+            mergedEditNeedsRender(edit: edit,
+                                  beforeRowCounts: beforeRowCounts,
+                                  editedLines: editedLines)
         if shouldRender {
             render(preservingVerticalPosition: true)
         } else {
@@ -405,7 +439,13 @@ extension MainWindowController {
         let endIndex = mergedTextRangeIndex(at: endLocation)
         guard let startIndex, let endIndex else { return [] }
         let lower = min(startIndex, endIndex)
-        let upper = max(startIndex, endIndex)
+        var upper = max(startIndex, endIndex)
+        let affectedEnd = NSMaxRange(affectedRange)
+        while affectedRange.length > 0,
+              upper + 1 < mergedTextRanges.count,
+              affectedEnd >= mergedTextRanges[upper + 1].characterRange.location {
+            upper += 1
+        }
         let ranges = Array(mergedTextRanges[lower...upper])
         guard ranges.allSatisfy(\.isEditable) else { return [] }
         return ranges
@@ -483,6 +523,139 @@ extension MainWindowController {
         let replacementRange = sourceLineRange.location..<NSMaxRange(sourceLineRange)
         fullLines.replaceSubrange(replacementRange, with: editedLines)
         normalize(block: block, editedLines: fullLines)
+    }
+
+    func followingBlockBoundaryDeletion(edit: PendingMergedEdit,
+                                                editedLines: [String]) -> BoundaryDeletion? {
+        guard edit.replacement.isEmpty,
+              edit.affectedRange.length == 1,
+              edit.ranges.count == 2,
+              let firstRange = edit.ranges.first,
+              let secondRange = edit.ranges.dropFirst().first,
+              edit.affectedRange.location == NSMaxRange(firstRange.characterRange),
+              NSMaxRange(edit.affectedRange) == secondRange.characterRange.location,
+              secondRange.blockIndex == firstRange.blockIndex + 1,
+              let document,
+              firstRange.blockIndex >= 0,
+              secondRange.blockIndex >= 0,
+              firstRange.blockIndex < document.blocks.count,
+              secondRange.blockIndex < document.blocks.count,
+              editedLines.count >= 1 else {
+            return nil
+        }
+
+        let firstBlock = document.blocks[firstRange.blockIndex]
+        let secondBlock = document.blocks[secondRange.blockIndex]
+        let firstOriginalLines = mergedLines(for: firstBlock, start: 1).lines
+        let secondOriginalLines = mergedLines(for: secondBlock, start: 1).lines
+        guard !firstOriginalLines.isEmpty,
+              !secondOriginalLines.isEmpty,
+              editedLines.count == firstOriginalLines.count + secondOriginalLines.count - 1 else {
+            return nil
+        }
+
+        let previousLineCount = firstOriginalLines.count
+        let previousLines = Array(editedLines.prefix(previousLineCount))
+        let nextLines = Array(editedLines.dropFirst(previousLineCount))
+        return BoundaryDeletion(blockIndex: firstRange.blockIndex,
+                                nextBlockIndex: secondRange.blockIndex,
+                                previousLines: previousLines,
+                                nextLines: nextLines)
+    }
+
+    func applyFollowingBlockBoundaryDeletion(_ deletion: BoundaryDeletion) {
+        guard let document,
+              deletion.blockIndex >= 0,
+              deletion.nextBlockIndex >= 0,
+              deletion.blockIndex < document.blocks.count,
+              deletion.nextBlockIndex < document.blocks.count else {
+            return
+        }
+
+        normalize(block: document.blocks[deletion.blockIndex], editedLines: deletion.previousLines)
+        normalize(block: document.blocks[deletion.nextBlockIndex], editedLines: deletion.nextLines)
+    }
+
+    func followingBlockBoundaryReclaim(edit: PendingMergedEdit,
+                                               editedLines: [String]) -> BoundaryReclaim? {
+        guard edit.replacement.contains("\n"),
+              edit.blockIndexes.count == 1,
+              let blockIndex = edit.blockIndexes.first,
+              let document,
+              blockIndex >= 0,
+              blockIndex + 1 < document.blocks.count,
+              !editedLines.isEmpty else {
+            return nil
+        }
+
+        let nextBlockIndex = blockIndex + 1
+        let nextBlock = document.blocks[nextBlockIndex]
+        guard let reclaimedLines = reclaimableLines(for: nextBlock, fromSuffixOf: editedLines) else {
+            return nil
+        }
+
+        let remainingLines = Array(editedLines.dropLast(reclaimedLines.count))
+        guard remainingLines.count < editedLines.count else { return nil }
+
+        return BoundaryReclaim(blockIndex: blockIndex,
+                               nextBlockIndex: nextBlockIndex,
+                               reclaimedLines: reclaimedLines,
+                               suffixStartOffset: characterOffset(forRow: remainingLines.count, in: editedLines))
+    }
+
+    func applyFollowingBlockBoundaryReclaim(_ reclaim: BoundaryReclaim,
+                                                    editedLines: [String]) {
+        guard let document,
+              reclaim.blockIndex >= 0,
+              reclaim.nextBlockIndex >= 0,
+              reclaim.blockIndex < document.blocks.count,
+              reclaim.nextBlockIndex < document.blocks.count else {
+            return
+        }
+
+        let remainingLines = Array(editedLines.dropLast(reclaim.reclaimedLines.count))
+        normalize(block: document.blocks[reclaim.blockIndex], editedLines: remainingLines)
+        let nextBlock = document.blocks[reclaim.nextBlockIndex]
+        let nextLines = reclaim.reclaimedLines + mergedLines(for: nextBlock, start: 1).lines
+        normalize(block: document.blocks[reclaim.nextBlockIndex],
+                  editedLines: nextLines)
+    }
+
+    func reclaimableLines(for block: MDBlock, fromSuffixOf lines: [String]) -> [String]? {
+        if block.kind == .equal,
+           block.pick == .manual {
+            let originalLines = block.leftLines ?? []
+            let currentLines = block.manualLines ?? []
+            let missingCount = originalLines.count - currentLines.count
+            if missingCount > 0,
+               Array(originalLines.suffix(currentLines.count)) == currentLines {
+                let missingPrefix = Array(originalLines.prefix(missingCount))
+                if Array(lines.suffix(missingPrefix.count)) == missingPrefix {
+                    return missingPrefix
+                }
+            }
+        }
+
+        let candidates = [block.leftLines ?? [], block.rightLines ?? []]
+        return candidates.first { candidate in
+            guard block.pick == .manual,
+                  (block.manualLines ?? []).isEmpty,
+                  !candidate.isEmpty,
+                  candidate.count <= lines.count else { return false }
+            return Array(lines.suffix(candidate.count)) == candidate
+        }
+    }
+
+    func movePendingSelectionIntoReclaimedBlockIfNeeded(_ reclaim: BoundaryReclaim) {
+        guard let selection = pendingMergedSelection,
+              selection.relativeLocation >= reclaim.suffixStartOffset else {
+            return
+        }
+
+        pendingMergedSelection = PendingMergedSelection(blockIndex: reclaim.nextBlockIndex,
+                                                        sourceLineRange: nil,
+                                                        relativeLocation: selection.relativeLocation - reclaim.suffixStartOffset,
+                                                        length: selection.length)
     }
 
     func lines(fromEditedMergedText text: String) -> [String] {

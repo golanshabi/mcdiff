@@ -18,11 +18,11 @@ extension MainWindowController {
 
         paneScrollerStack.orientation = .horizontal
         paneScrollerStack.spacing = 0
-        paneScrollerStack.distribution = .fillEqually
+        paneScrollerStack.distribution = .fill
         paneScrollerStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         paneScrollerStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        horizontalScrollerRow.addArrangedSubview(horizontalScrollerSpacer(width: pickButtonSlotWidth))
+        var equalWidthScrollers = [PaneHorizontalSlider]()
         for pane in DiffPane.allCases {
             let scroller = PaneHorizontalSlider(pane: pane)
             scroller.identifier = NSUserInterfaceItemIdentifier("\(pane.identifier)HorizontalScroller")
@@ -34,9 +34,17 @@ extension MainWindowController {
             scroller.heightAnchor.constraint(equalToConstant: horizontalScrollerHeight).isActive = true
             paneScrollers[pane] = scroller
             paneScrollerStack.addArrangedSubview(scroller)
+            equalWidthScrollers.append(scroller)
+            if pane != .right {
+                paneScrollerStack.addArrangedSubview(horizontalScrollerSpacer(width: pickButtonSlotWidth))
+            }
+        }
+        if let firstScroller = equalWidthScrollers.first {
+            for scroller in equalWidthScrollers.dropFirst() {
+                scroller.widthAnchor.constraint(equalTo: firstScroller.widthAnchor).isActive = true
+            }
         }
         horizontalScrollerRow.addArrangedSubview(paneScrollerStack)
-        horizontalScrollerRow.addArrangedSubview(horizontalScrollerSpacer(width: pickButtonSlotWidth))
     }
 
     func horizontalScrollerSpacer(width: CGFloat) -> NSView {

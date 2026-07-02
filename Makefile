@@ -30,11 +30,11 @@ SWIFT_TEST_APP_FILES := \
 	App/Logger.swift \
 	App/PaneViews.swift \
 	App/MainWindowController.swift \
-	App/MainWindowController+Rendering.swift \
-	App/MainWindowController+MergeEditing.swift \
-	App/MainWindowController+Git.swift \
-	App/MainWindowController+HorizontalScrolling.swift \
-	App/MainWindowController+Utilities.swift
+	App/MainWindowController_Rendering.swift \
+	App/MainWindowController_MergeEditing.swift \
+	App/MainWindowController_Git.swift \
+	App/MainWindowController_HorizontalScrolling.swift \
+	App/MainWindowController_Utilities.swift
 
 $(OBJ_DIR)/.dir:
 	mkdir -p $(OBJ_DIR)

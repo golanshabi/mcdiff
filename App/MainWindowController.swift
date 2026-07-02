@@ -89,7 +89,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
 
     let paneTextFont = NSFont.monospacedSystemFont(ofSize: 12, weight: NSFont.Weight.regular)
     let lineNumberFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-    let pickButtonSlotWidth: CGFloat = 92
+    let pickButtonSlotWidth: CGFloat = 44
     let lineNumberWidth: CGFloat = 42
     let paneInset: CGFloat = 8
     let paneContentSpacing: CGFloat = 8

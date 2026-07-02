@@ -26,6 +26,17 @@ func buttons(in view: NSView) -> [NSButton] {
     allSubviews(of: view).compactMap { $0 as? NSButton }
 }
 
+func pickButtons(in view: NSView) -> [NSButton] {
+    buttons(in: view).filter { button in
+        button.accessibilityLabel() == "Use Left" || button.accessibilityLabel() == "Use Right"
+    }
+}
+
+func pickButton(in view: NSView, picksLeft: Bool) -> NSButton? {
+    let label = picksLeft ? "Use Left" : "Use Right"
+    return pickButtons(in: view).first { $0.accessibilityLabel() == label }
+}
+
 func sliders(in view: NSView) -> [NSSlider] {
     allSubviews(of: view).compactMap { $0 as? NSSlider }
 }
@@ -270,6 +281,10 @@ func textLabelOrigins(in view: NSView, clipIdentifier: String) -> [CGFloat] {
 
 func paneWidths(in view: NSView, identifier: String) -> [CGFloat] {
     views(in: view, identifier: identifier).map(\.frame.width)
+}
+
+func frame(of view: NSView, in rootView: NSView) -> NSRect {
+    view.convert(view.bounds, to: rootView)
 }
 
 func assertStableWidths(_ widths: [CGFloat], _ message: String) {

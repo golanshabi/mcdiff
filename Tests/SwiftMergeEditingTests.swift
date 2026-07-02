@@ -141,7 +141,7 @@ func testUndoPreservesCaretInsideChangedBlock() throws {
     controller.load(left: left, right: right)
     layout(testWindow, controller)
 
-    buttons(in: controller.view).first { $0.title == "Use Left" }?.performClick(nil)
+    pickButton(in: controller.view, picksLeft: true)?.performClick(nil)
     layout(testWindow, controller)
 
     guard let merged = textViews(in: controller.view, identifier: "mergedSide").first,
@@ -243,6 +243,85 @@ func testManualMergedEditCanBreakLineAtEndOfChangedLine() throws {
 
     assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["alpha", "manual", "", "omega"],
                "line break at the end creates a real blank manual line")
+}
+
+func testRebreakingLineMergedFromChangedAndEqualRowsRestoresBoundary() throws {
+    let files = try temporaryDirectory("rebreak-changed-equal")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "a\nb\nc\n".write(to: left, atomically: true, encoding: .utf8)
+    try "A\nb\nc\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    pickButton(in: controller.view, picksLeft: true)?.performClick(nil)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first,
+          let aRange = nsRange(of: "a", in: merged.string) else {
+        assertTrue(false, "picked changed line is rendered before merging rows")
+        return
+    }
+
+    replaceText(in: merged,
+                range: NSRange(location: NSMaxRange(aRange), length: 1),
+                with: "",
+                "deleting the newline after a merges b into the changed row")
+    layout(testWindow, controller)
+
+    let joinedLines = textLines(in: controller.view, identifier: "mergedSide")
+    assertTrue(joinedLines.prefix(2).elementsEqual(["ab", "c"]),
+               "deleting the boundary newline does not pull lower equal lines into the diff")
+    let joinedChangedBlock = controller.document?.blocks.first
+    let joinedEqualBlock = controller.document?.blocks.dropFirst().first
+    assertTrue(joinedChangedBlock?.manualLines == ["ab"],
+               "only the joined line becomes changed manual text")
+    assertTrue(joinedEqualBlock?.manualLines == ["c"],
+               "equal lines below the consumed line stay in the following block")
+    let mergedPane = views(in: controller.view, identifier: "mergedSide")
+        .compactMap { $0 as? PaneColumnView }
+        .first
+    assertTrue(mergedPane?.backgroundRuns.first?.rowCount == 1,
+               "only the joined changed line is highlighted as diff")
+
+    guard let joined = textViews(in: controller.view, identifier: "mergedSide").first,
+          let abRange = nsRange(of: "ab", in: joined.string) else {
+        assertTrue(false, "merged changed row contains ab before rebreaking")
+        return
+    }
+
+    replaceText(in: joined,
+                range: NSRange(location: abRange.location + ("a" as NSString).length, length: 0),
+                with: "\n",
+                "reinserting the newline splits the changed row")
+    layout(testWindow, controller)
+
+    let lines = textLines(in: controller.view, identifier: "mergedSide")
+    assertTrue(lines == ["a", "b", "c"],
+               "b moves down one line without leaving a blank padding row")
+    let changedBlock = controller.document?.blocks.first
+    let equalBlock = controller.document?.blocks.dropFirst().first
+    assertTrue(changedBlock?.pick == .left && (changedBlock?.manualLines ?? []).isEmpty,
+               "changed block returns to the picked left line after rebreaking the boundary")
+    assertTrue(equalBlock?.kind == .equal && equalBlock?.pick == .unpicked,
+               "b returns to the following equal block instead of staying in the diff")
+
+    undoMergedText(in: controller, "merged text view exists for boundary rebreak undo")
+    layout(testWindow, controller)
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide").prefix(2).elementsEqual(["ab", "c"]),
+               "undoing the rebreak restores the joined changed row and remaining equal line")
+
+    redoMergedText(in: controller, "merged text view exists for boundary rebreak redo")
+    layout(testWindow, controller)
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["a", "b", "c"],
+               "redoing the rebreak restores the changed/equal boundary")
 }
 
 func testAllBlankRowsInDeletionBlockAreEditable() throws {
@@ -656,7 +735,7 @@ func testPickingOneBlockLeavesOtherMergedBlocksBlankAndUnsaved() throws {
     assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["a", "", "b", "", "c"],
                "both unpicked changed blocks start blank in the merged pane")
 
-    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    pickButton(in: controller.view, picksLeft: false)?.performClick(nil)
     layout(testWindow, controller)
 
     let mergedText = text(in: controller.view, identifier: "mergedSide")
@@ -684,7 +763,7 @@ func testPickingSmallerConflictKeepsLeftAndRightRowsVisible() throws {
     assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["same", "", "", "", "tail"],
                "unpicked conflict reserves blank rows for the larger side")
 
-    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    pickButton(in: controller.view, picksLeft: false)?.performClick(nil)
     layout(testWindow, controller)
 
     assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["same", "right one", "", "", "tail"],
