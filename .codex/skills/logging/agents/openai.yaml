@@ -1,0 +1,4 @@
+interface:
+  display_name: "Logging"
+  short_description: "Practical logging and debug-log guidance"
+  default_prompt: "Use $logging to add informative low-overhead logs."

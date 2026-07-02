@@ -1,0 +1,4 @@
+interface:
+  display_name: "Coding"
+  short_description: "Minimal readable code change guidance"
+  default_prompt: "Use $coding to make a small readable code change."

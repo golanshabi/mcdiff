@@ -19,6 +19,22 @@ SWIFT_LDFLAGS := -L$(LIBGIT2)/lib -Xlinker -rpath -Xlinker $(LIBGIT2)/lib
 OBJ_DIR := build/$(BUILD_MODE)
 TEST_BIN := $(OBJ_DIR)/CoreTests
 SWIFT_TEST_BIN := $(OBJ_DIR)/SwiftTests
+SWIFT_TEST_FILES := \
+	Tests/SwiftTests.swift \
+	Tests/SwiftTestHelpers.swift \
+	Tests/SwiftBridgeTests.swift \
+	Tests/SwiftWindowRenderingTests.swift \
+	Tests/SwiftMergeEditingTests.swift \
+	Tests/SwiftGitAndScrollingTests.swift
+SWIFT_TEST_APP_FILES := \
+	App/Logger.swift \
+	App/PaneViews.swift \
+	App/MainWindowController.swift \
+	App/MainWindowController+Rendering.swift \
+	App/MainWindowController+MergeEditing.swift \
+	App/MainWindowController+Git.swift \
+	App/MainWindowController+HorizontalScrolling.swift \
+	App/MainWindowController+Utilities.swift
 
 $(OBJ_DIR)/.dir:
 	mkdir -p $(OBJ_DIR)
@@ -47,13 +63,13 @@ launcher:
 $(TEST_BIN): Tests/CoreTests.cpp Core/* | $(OBJ_DIR)/.dir
 	$(CXX) $(CXXFLAGS) Tests/CoreTests.cpp Core/Logger.cpp Core/DiffEngine.cpp Core/ConflictParser.cpp Core/MergeBuilder.cpp $(LDFLAGS) -lgit2 -o $(TEST_BIN)
 
-$(SWIFT_TEST_BIN): Tests/SwiftTests.swift App/Logger.swift App/MainWindowController.swift Bridge/* Core/* | $(OBJ_DIR)/.dir
+$(SWIFT_TEST_BIN): $(SWIFT_TEST_FILES) $(SWIFT_TEST_APP_FILES) Bridge/* Core/* | $(OBJ_DIR)/.dir
 	$(CXX) $(CXXFLAGS) -c Core/Logger.cpp -o $(OBJ_DIR)/SwiftTestLogger.o
 	$(CXX) $(CXXFLAGS) -c Core/DiffEngine.cpp -o $(OBJ_DIR)/SwiftTestDiffEngine.o
 	$(CXX) $(CXXFLAGS) -c Core/ConflictParser.cpp -o $(OBJ_DIR)/SwiftTestConflictParser.o
 	$(CXX) $(CXXFLAGS) -c Core/MergeBuilder.cpp -o $(OBJ_DIR)/SwiftTestMergeBuilder.o
 	$(CXX) $(CXXFLAGS) -c Bridge/DiffBridge.mm -o $(OBJ_DIR)/SwiftTestDiffBridge.o
-	swiftc $(SWIFTFLAGS) Tests/SwiftTests.swift App/Logger.swift App/MainWindowController.swift $(OBJ_DIR)/SwiftTest*.o -module-cache-path build/ModuleCache -import-objc-header Bridge/DiffBridge.h -framework AppKit $(SWIFT_LDFLAGS) -lgit2 -lc++ -o $(SWIFT_TEST_BIN)
+	swiftc $(SWIFTFLAGS) $(SWIFT_TEST_FILES) $(SWIFT_TEST_APP_FILES) $(OBJ_DIR)/SwiftTest*.o -module-cache-path build/ModuleCache -import-objc-header Bridge/DiffBridge.h -framework AppKit $(SWIFT_LDFLAGS) -lgit2 -lc++ -o $(SWIFT_TEST_BIN)
 
 test: $(TEST_BIN) $(SWIFT_TEST_BIN)
 	$(TEST_BIN)

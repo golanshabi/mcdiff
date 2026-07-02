@@ -1,0 +1,254 @@
+import AppKit
+import Foundation
+
+func testMainWindowInitialState() {
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+
+    let titles = Set(buttons(in: controller.view).map(\.title))
+    assertTrue(titles.contains("Choose Left File"), "left file button exists")
+    assertTrue(titles.contains("Choose Right File"), "right file button exists")
+    assertTrue(titles.contains("Compare"), "compare button exists")
+    assertTrue(titles.contains("Save Result"), "save button exists")
+
+    let compare = buttons(in: controller.view).first { $0.title == "Compare" }
+    let save = buttons(in: controller.view).first { $0.title == "Save Result" }
+    assertTrue(compare?.isEnabled == false, "compare starts disabled")
+    assertTrue(save?.isEnabled == false, "save starts disabled")
+}
+
+func testMainWindowIdenticalFilesEnableSaveWithoutPick() throws {
+    let files = try temporaryDirectory("identical-files")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nbeta\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nbeta\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    let labelText = renderedText(in: controller.view)
+    assertTrue(labelText.contains("alpha"), "identical files render first line")
+    assertTrue(labelText.contains("beta"), "identical files render second line")
+    assertTrue(labelString(in: controller.view, identifier: "leftSideLineNumbers").contains("1"), "identical files render left line numbers")
+    assertTrue(labelString(in: controller.view, identifier: "mergedSideLineNumbers").isEmpty, "identical files do not render merged line numbers")
+    assertTrue(labelString(in: controller.view, identifier: "rightSideLineNumbers").contains("1"), "identical files render right line numbers")
+    assertTrue(text(in: controller.view, identifier: "leftSide").contains("alpha"), "identical files render left pane")
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("alpha"), "identical files render merged pane")
+    assertTrue(text(in: controller.view, identifier: "rightSide").contains("alpha"), "identical files render right pane")
+    assertTrue(buttons(in: controller.view).contains { $0.title == "Use Left" } == false, "identical files have no pick buttons")
+
+    let save = buttons(in: controller.view).first { $0.title == "Save Result" }
+    assertTrue(save?.isEnabled == true, "identical files can save immediately")
+}
+
+func testMainWindowLoadsAndPicksDiff() throws {
+    let files = try temporaryDirectory("files")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    let labelText = renderedText(in: controller.view)
+    assertTrue(labelText.contains("left"), "rendered left-side changed line")
+    assertTrue(labelText.contains("right"), "rendered right-side changed line")
+    assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "leftSide"), redAtLeast: 0.8), "changed left side is red")
+    assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "rightSide"), greenAtLeast: 0.45), "changed right side is green")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "merged pane does not show an unresolved placeholder")
+    assertTrue(!textLines(in: controller.view, identifier: "mergedSide").contains("left"), "merged pane starts with changed row blank")
+    assertTrue(!textLines(in: controller.view, identifier: "mergedSide").contains("right"), "merged pane starts without either side picked")
+    assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "mergedSide"), redAtLeast: 0.8, greenAtLeast: 0.3), "unresolved merged pane uses fourth color")
+
+    let useRight = buttons(in: controller.view).first { $0.title == "Use Right" }
+    assertTrue(useRight != nil, "rendered Use Right button")
+    useRight?.performClick(nil)
+    layout(testWindow, controller)
+
+    let save = buttons(in: controller.view).first { $0.title == "Save Result" }
+    assertTrue(save?.isEnabled == true, "save enables after picking a changed block")
+    assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "rightSide"), blueAtLeast: 0.7), "picked right side is blue")
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("right"), "merged pane updates to picked right content")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "merged pane stays placeholder-free after pick")
+}
+
+func testDeletionDiffRequiresExplicitPickAndUpdatesMergedPane() {
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: URL(fileURLWithPath: "Tests/diff_1"),
+                    right: URL(fileURLWithPath: "Tests/diff_2"))
+    layout(testWindow, controller)
+
+    let labelText = renderedText(in: controller.view)
+    assertTrue(labelText.contains("d"), "rendered deleted line from left file")
+    assertTrue(labelString(in: controller.view, identifier: "leftSideLineNumbers").contains("4"), "deletion diff renders left line number gutter")
+    assertTrue(labelString(in: controller.view, identifier: "mergedSideLineNumbers").isEmpty, "deletion diff does not render merged line numbers")
+    assertTrue(labelString(in: controller.view, identifier: "rightSideLineNumbers").contains("4"), "deletion diff renders right line number gutter")
+    assertTrue(labelString(in: controller.view, identifier: "rightSideLineNumbers")
+        .components(separatedBy: "\n")
+        .contains(""), "empty right-side deletion row has no line number")
+    assertTrue(labels(in: controller.view).contains { !$0.frame.isEmpty && !$0.isHidden }, "rendered labels have visible frames")
+
+    let save = buttons(in: controller.view).first { $0.title == "Save Result" }
+    assertTrue(save?.isEnabled == false, "deletion diff requires an explicit pick before saving")
+    assertTrue(buttons(in: controller.view).contains { $0.title == "Use Left" }, "deletion diff renders Use Left")
+    assertTrue(buttons(in: controller.view).contains { $0.title == "Use Right" }, "deletion diff renders Use Right")
+    assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "leftSide"), redAtLeast: 0.8), "deletion diff shows red deletion side")
+    assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "rightSide"), greenAtLeast: 0.45), "deletion diff shows green addition side")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "deletion merged pane starts without unresolved placeholder text")
+
+    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    layout(testWindow, controller)
+    assertTrue(!textLines(in: controller.view, identifier: "mergedSide").contains("d"), "right pick removes deleted line from merged pane")
+    assertTrue(labelString(in: controller.view, identifier: "mergedSideLineNumbers").isEmpty, "picked deletion still does not render merged line numbers")
+    assertTrue(save?.isEnabled == false, "other unpicked block keeps save disabled")
+
+    buttons(in: controller.view).first { $0.title == "Use Left" }?.performClick(nil)
+    layout(testWindow, controller)
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide").contains("d"), "left pick keeps deleted line in merged pane")
+}
+
+func testChangedRowsKeepStablePaneWidths() {
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: URL(fileURLWithPath: "Tests/diff_1"),
+                    right: URL(fileURLWithPath: "Tests/diff_2"))
+    layout(testWindow, controller)
+
+    assertTrue(views(in: controller.view, identifier: "diffTable").count == 1, "fixture renders one TextKit diff table")
+    assertTrue(textViews(in: controller.view, identifier: "leftSide").count == 1, "left pane renders one text view")
+    assertTrue(textViews(in: controller.view, identifier: "mergedSide").count == 1, "merged pane renders one text view")
+    assertTrue(textViews(in: controller.view, identifier: "rightSide").count == 1, "right pane renders one text view")
+    assertStableWidths(paneWidths(in: controller.view, identifier: "leftSide"), "left pane widths are stable")
+    assertStableWidths(paneWidths(in: controller.view, identifier: "mergedSide"), "merged pane widths are stable")
+    assertStableWidths(paneWidths(in: controller.view, identifier: "rightSide"), "right pane widths are stable")
+    assertTrue(labels(in: controller.view).contains { !$0.frame.isEmpty && !$0.isHidden }, "rendered labels have visible frames")
+}
+
+func testPaneTextIsSelectableAndMergedPaneEditable() throws {
+    let files = try temporaryDirectory("selectable-text")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft words\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright words\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    for identifier in ["leftSide", "rightSide"] {
+        let paneTextViews = textViews(in: controller.view, identifier: identifier)
+        assertTrue(paneTextViews.count == 1, "\(identifier) renders one native text view")
+        assertTrue(paneTextViews.allSatisfy { !$0.isEditable }, "\(identifier) text is read-only")
+        assertTrue(paneTextViews.allSatisfy { !$0.drawsBackground }, "\(identifier) text keeps pane background visible")
+        assertTrue(paneTextViews.allSatisfy { $0.textContainer?.widthTracksTextView == false },
+                   "\(identifier) text does not wrap")
+        assertTrue(paneTextViews.allSatisfy(\.isSelectable), "\(identifier) uses native selection")
+        assertTrue(views(in: controller.view, identifier: "\(identifier)SelectionOverlay").isEmpty,
+                   "\(identifier) does not render custom selection overlays")
+    }
+
+    let mergedTextViews = textViews(in: controller.view, identifier: "mergedSide")
+    assertTrue(mergedTextViews.count == 1, "mergedSide renders one native text view")
+    assertTrue(mergedTextViews.allSatisfy(\.isEditable), "mergedSide text is editable")
+    assertTrue(mergedTextViews.allSatisfy { !$0.drawsBackground }, "mergedSide text keeps pane background visible")
+    assertTrue(mergedTextViews.allSatisfy { $0.textContainer?.widthTracksTextView == false },
+               "mergedSide text does not wrap")
+    assertTrue(mergedTextViews.allSatisfy(\.isSelectable), "mergedSide uses native selection")
+    assertTrue(views(in: controller.view, identifier: "mergedSideSelectionOverlay").isEmpty,
+               "mergedSide does not render custom selection overlays")
+
+    assertTrue(text(in: controller.view, identifier: "leftSide").contains("left words"),
+               "left pane text remains discoverable")
+    assertTrue(text(in: controller.view, identifier: "rightSide").contains("right words"),
+               "right pane text remains discoverable")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("Unresolved"),
+               "merged pane does not render unresolved placeholder text")
+}
+
+func testMergedPaneTextBecomesSelectableAfterPick() throws {
+    let files = try temporaryDirectory("picked-merged-selectable")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft words\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright words\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    let unpicked = textViews(in: controller.view, identifier: "mergedSide").first
+    assertTrue(unpicked?.string.contains("Unresolved") == false, "unpicked merged pane has no placeholder text")
+    assertTrue(unpicked?.isSelectable == true, "merged pane uses native selection before pick")
+    assertTrue(unpicked?.isEditable == true, "merged pane is editable before pick")
+
+    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    layout(testWindow, controller)
+
+    let picked = textViews(in: controller.view, identifier: "mergedSide").first
+    assertTrue(picked?.string.contains("right words") == true, "picked merged text appears in the native text view")
+    assertTrue(picked?.string.contains("Unresolved") == false, "picked merged text remains placeholder-free")
+    assertTrue(picked?.isSelectable == true, "picked merged text remains selectable")
+    assertTrue(picked?.isEditable == true, "picked merged text remains editable")
+}
+
+func testSidePickUndoRedoRestoresMergedState() throws {
+    let files = try temporaryDirectory("pick-undo-redo")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    layout(testWindow, controller)
+
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("right"),
+               "right pick appears before undo")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save Result" }?.isEnabled == true,
+               "right pick enables save before undo")
+
+    undoMergedText(in: controller, "merged text view exists for pick undo")
+    layout(testWindow, controller)
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["alpha", "", "omega"],
+               "undoing a pick restores the unpicked blank changed row")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save Result" }?.isEnabled == false,
+               "undoing a pick disables save again")
+
+    redoMergedText(in: controller, "merged text view exists for pick redo")
+    layout(testWindow, controller)
+
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("right"),
+               "redoing a pick restores picked text")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Save Result" }?.isEnabled == true,
+               "redoing a pick re-enables save")
+}
