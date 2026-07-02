@@ -179,6 +179,74 @@ private func replaceText(in textView: NSTextView,
     textView.didChangeText()
 }
 
+private func clickText(in textView: NSTextView,
+                       containing needle: String,
+                       window: NSWindow,
+                       _ message: String) {
+    guard let range = nsRange(of: needle, in: textView.string),
+          let layoutManager = textView.layoutManager,
+          let textContainer = textView.textContainer else {
+        assertTrue(false, message)
+        return
+    }
+
+    let glyphIndex = layoutManager.glyphIndexForCharacter(at: range.location)
+    let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+    let origin = textView.textContainerOrigin
+    let textPoint = NSPoint(x: origin.x + fragment.minX + 4,
+                            y: origin.y + fragment.midY)
+    let windowPoint = textView.convert(textPoint, to: nil)
+    guard let event = NSEvent.mouseEvent(with: .leftMouseDown,
+                                         location: windowPoint,
+                                         modifierFlags: [],
+                                         timestamp: 0,
+                                         windowNumber: window.windowNumber,
+                                         context: nil,
+                                         eventNumber: 0,
+                                         clickCount: 1,
+                                         pressure: 1) else {
+        assertTrue(false, "\(message) creates mouse event")
+        return
+    }
+
+    textView.mouseDown(with: event)
+    _ = textContainer
+}
+
+private func clickLineNumberControl(in rootView: NSView,
+                                    identifier: String,
+                                    symbol: String,
+                                    window: NSWindow,
+                                    _ message: String) {
+    guard let gutter = views(in: rootView, identifier: identifier).first,
+          let label = gutter.accessibilityLabel(),
+          let row = label.components(separatedBy: "\n").firstIndex(of: symbol) else {
+        assertTrue(false, message)
+        return
+    }
+
+    let font = textViews(in: rootView, identifier: "mergedSide").first?.font
+        ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    let rowHeight = ceil(font.ascender - font.descender + font.leading)
+    let point = NSPoint(x: gutter.bounds.midX,
+                        y: CGFloat(row) * rowHeight + rowHeight / 2)
+    let windowPoint = gutter.convert(point, to: nil)
+    guard let event = NSEvent.mouseEvent(with: .leftMouseDown,
+                                         location: windowPoint,
+                                         modifierFlags: [],
+                                         timestamp: 0,
+                                         windowNumber: window.windowNumber,
+                                         context: nil,
+                                         eventNumber: 0,
+                                         clickCount: 1,
+                                         pressure: 1) else {
+        assertTrue(false, "\(message) creates mouse event")
+        return
+    }
+
+    gutter.mouseDown(with: event)
+}
+
 private func undoMergedText(in controller: MainWindowController, _ message: String) {
     assertTrue(!textViews(in: controller.view, identifier: "mergedSide").isEmpty, message)
     controller.undo(nil)
@@ -732,6 +800,7 @@ private func testSameLineManualMergedEditDoesNotRerenderTextView() throws {
         assertTrue(false, "manual text is rendered after first edit")
         return
     }
+    assertTrue(afterFirstEdit === initialMerged, "first manual edit inside reserved conflict rows does not rebuild the text view")
 
     replaceText(in: afterFirstEdit,
                 range: NSRange(location: NSMaxRange(manualRange), length: 0),
@@ -1360,6 +1429,30 @@ private func testPickingSmallerConflictKeepsLeftAndRightRowsVisible() throws {
                "picking right does not remove the longer left side from view")
     assertTrue(textLines(in: controller.view, identifier: "rightSide") == ["same", "right one", "", "", "tail"],
                "right pane stays aligned with the full changed block")
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first,
+          let rightRange = nsRange(of: "right one", in: merged.string) else {
+        assertTrue(false, "picked smaller right side is editable")
+        return
+    }
+    replaceText(in: merged,
+                range: NSRange(location: NSMaxRange(rightRange), length: 0),
+                with: "!",
+                "editing picked smaller right side is accepted")
+    layout(testWindow, controller)
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["same", "right one!", "", "", "tail"],
+               "editing the smaller picked side keeps only alignment padding rows")
+    undoMergedText(in: controller, "merged text view exists for smaller picked side undo")
+    layout(testWindow, controller)
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["same", "right one", "", "", "tail"],
+               "undoing an edit in the smaller picked side does not append padding as content")
+    undoMergedText(in: controller, "merged text view exists for smaller right pick undo")
+    layout(testWindow, controller)
+
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["same", "", "", "", "tail"],
+               "undoing the smaller right pick restores padding rows without growing the block")
 }
 
 private func testLongLineSlidersMoveAllPanesTogetherWithoutChangingPaneWidths() throws {
@@ -1485,6 +1578,215 @@ private func testMainWindowGitMergeToolSaveWritesMergedPath() throws {
     assertTrue(saved == "before\ntheirs\nafter\n", "mergetool writes resolved output to merged path")
 }
 
+private func testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave() throws {
+    let files = try temporaryDirectory("git-mergetool-compact-context")
+    let base = files.appendingPathComponent("base.txt")
+    let local = files.appendingPathComponent("local.txt")
+    let remote = files.appendingPathComponent("remote.txt")
+    let merged = files.appendingPathComponent("merged.txt")
+    try "base\n".write(to: base, atomically: true, encoding: .utf8)
+    try "ours\n".write(to: local, atomically: true, encoding: .utf8)
+    try "theirs\n".write(to: remote, atomically: true, encoding: .utf8)
+
+    let beforeLines = (1...350).map { "before \($0)" }
+    let afterLines = (1...3).map { "after \($0)" }
+    let conflicted = (beforeLines + [
+        "<<<<<<< HEAD",
+        "ours",
+        "=======",
+        "theirs",
+        ">>>>>>> branch"
+    ] + afterLines).joined(separator: "\n") + "\n"
+    try conflicted.write(to: merged, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    var completed: Bool?
+    controller.mergeToolCompletionHandler = { completed = $0 }
+    controller.loadGitMergeTool(base: base, local: local, remote: remote, merged: merged)
+    layout(testWindow, controller)
+
+    let visibleLines = textLines(in: controller.view, identifier: "mergedSide")
+    assertTrue(visibleLines.count < beforeLines.count + afterLines.count,
+               "mergetool renders compact conflict context")
+    assertTrue(visibleLines.contains("⋯"),
+               "mergetool shows an obvious collapsed context band")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("Show"),
+               "merged text body does not contain textual expansion controls")
+    let leftGutterLabel = views(in: controller.view, identifier: "leftSideLineNumbers")
+        .first?
+        .accessibilityLabel() ?? ""
+    assertTrue(leftGutterLabel.contains("↑") &&
+               leftGutterLabel.contains("↕") &&
+               leftGutterLabel.contains("↓"),
+               "line number gutter renders icon-only expansion controls")
+    assertTrue(!visibleLines.contains("before 150"),
+               "middle unchanged context is not rendered")
+
+    guard let mergedView = textViews(in: controller.view, identifier: "mergedSide").first,
+          let omittedRange = nsRange(of: "⋯", in: mergedView.string) else {
+        assertTrue(false, "compact omitted context is visible")
+        return
+    }
+    replaceText(in: mergedView,
+                range: omittedRange,
+                with: "changed",
+                shouldAllow: false,
+                "omitted context is read-only")
+    guard let visibleEqualRange = nsRange(of: "before 1", in: mergedView.string) else {
+        assertTrue(false, "visible unchanged context is editable")
+        return
+    }
+    replaceText(in: mergedView,
+                range: visibleEqualRange,
+                with: "edited before 1",
+                "visible unchanged context is editable")
+    guard let afterEqualEdit = textViews(in: controller.view, identifier: "mergedSide").first,
+          let editedRange = nsRange(of: "edited before 1", in: afterEqualEdit.string) else {
+        assertTrue(false, "edited unchanged context remains visible")
+        return
+    }
+    replaceText(in: afterEqualEdit,
+                range: NSRange(location: NSMaxRange(editedRange), length: 0),
+                with: "X",
+                "first same-line unchanged context edit is accepted")
+    guard let afterFirstCharacter = textViews(in: controller.view, identifier: "mergedSide").first,
+          let editedXRange = nsRange(of: "edited before 1X", in: afterFirstCharacter.string) else {
+        assertTrue(false, "first unchanged context character appears")
+        return
+    }
+    replaceText(in: afterFirstCharacter,
+                range: NSRange(location: NSMaxRange(editedXRange), length: 0),
+                with: "Y",
+                "second same-line unchanged context edit is accepted")
+    guard let afterSecondCharacter = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists after second unchanged context character")
+        return
+    }
+    undoMergedText(in: controller, "merged text view exists for compact unchanged context undo")
+    layout(testWindow, controller)
+    guard let afterFirstUndo = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists after first compact unchanged context undo")
+        return
+    }
+    assertTrue(afterFirstUndo === afterSecondCharacter,
+               "compact unchanged context undo updates in place")
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("edited before 1X"),
+               "first undo removes only the last unchanged context character")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("edited before 1XY"),
+               "first undo does not keep the last unchanged context character")
+    undoMergedText(in: controller, "merged text view exists for second compact unchanged context undo")
+    layout(testWindow, controller)
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("edited before 1"),
+               "second undo removes only the previous unchanged context character")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("edited before 1X"),
+               "second undo does not jump over the previous unchanged context character")
+    guard let suffixRange = nsRange(of: "before 350", in: afterFirstUndo.string) else {
+        assertTrue(false, "lower visible compact context is present")
+        return
+    }
+    replaceText(in: afterFirstUndo,
+                range: suffixRange,
+                with: "edited before 350",
+                "lower visible compact context is editable")
+    guard let afterSuffixEdit = textViews(in: controller.view, identifier: "mergedSide").first,
+          let suffixEditedRange = nsRange(of: "edited before 350", in: afterSuffixEdit.string) else {
+        assertTrue(false, "lower compact context edit remains visible")
+        return
+    }
+    assertTrue(afterSuffixEdit === afterFirstUndo,
+               "lower compact context edit updates in place")
+    replaceText(in: afterSuffixEdit,
+                range: NSRange(location: NSMaxRange(suffixEditedRange), length: 0),
+                with: "X",
+                "first lower compact context character edit is accepted")
+    guard let afterSuffixFirstCharacter = textViews(in: controller.view, identifier: "mergedSide").first,
+          let suffixEditedXRange = nsRange(of: "edited before 350X", in: afterSuffixFirstCharacter.string) else {
+        assertTrue(false, "first lower compact context character appears")
+        return
+    }
+    replaceText(in: afterSuffixFirstCharacter,
+                range: NSRange(location: NSMaxRange(suffixEditedXRange), length: 0),
+                with: "Y",
+                "second lower compact context character edit is accepted")
+    guard let afterSuffixSecondCharacter = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists after lower compact context edit")
+        return
+    }
+    undoMergedText(in: controller, "merged text view exists for lower compact context undo")
+    layout(testWindow, controller)
+    guard let afterSuffixFirstUndo = textViews(in: controller.view, identifier: "mergedSide").first,
+          let suffixUndoRange = nsRange(of: "edited before 350X", in: afterSuffixFirstUndo.string) else {
+        assertTrue(false, "lower compact context undo keeps the previous character")
+        return
+    }
+    assertTrue(afterSuffixFirstUndo === afterSuffixSecondCharacter,
+               "lower compact context undo updates in place")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("edited before 350XY"),
+               "lower compact context undo removes only the last character")
+    assertTrue(afterSuffixFirstUndo.selectedRange().location >= suffixUndoRange.location &&
+               afterSuffixFirstUndo.selectedRange().location <= NSMaxRange(suffixUndoRange),
+               "lower compact context undo keeps the selection in the lower range")
+    undoMergedText(in: controller, "merged text view exists for second lower compact context undo")
+    layout(testWindow, controller)
+    assertTrue(text(in: controller.view, identifier: "mergedSide").contains("edited before 350"),
+               "second lower compact context undo removes the previous character")
+    assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("edited before 350X"),
+               "second lower compact context undo does not jump to another range")
+    clickLineNumberControl(in: controller.view,
+                           identifier: "leftSideLineNumbers",
+                           symbol: "↑",
+                           window: testWindow,
+                           "clicking top gutter control loads more context")
+    layout(testWindow, controller)
+
+    let expandedLines = textLines(in: controller.view, identifier: "mergedSide")
+    assertTrue(expandedLines.contains("before 120"),
+               "top expansion reveals 20 more context lines from the hidden middle")
+    assertTrue(!expandedLines.contains("before 121"),
+               "top expansion does not reveal more than 20 hidden lines")
+    assertTrue(expandedLines.contains("⋯"),
+               "partially expanded context keeps the remaining hidden row obvious")
+
+    clickLineNumberControl(in: controller.view,
+                           identifier: "leftSideLineNumbers",
+                           symbol: "↓",
+                           window: testWindow,
+                           "clicking bottom gutter control loads more context")
+    layout(testWindow, controller)
+    let bottomExpandedLines = textLines(in: controller.view, identifier: "mergedSide")
+    assertTrue(bottomExpandedLines.contains("before 231"),
+               "bottom expansion reveals 20 more context lines from the lower hidden side")
+    assertTrue(!bottomExpandedLines.contains("before 230"),
+               "bottom expansion does not reveal more than 20 hidden lines")
+
+    clickLineNumberControl(in: controller.view,
+                           identifier: "leftSideLineNumbers",
+                           symbol: "↕",
+                           window: testWindow,
+                           "clicking full gutter control loads all hidden context")
+    layout(testWindow, controller)
+    let fullyExpandedLines = textLines(in: controller.view, identifier: "mergedSide")
+    assertTrue(fullyExpandedLines.contains("before 200"),
+               "full expansion reveals all hidden context")
+    assertTrue(!fullyExpandedLines.contains("⋯"),
+               "full expansion removes the collapsed context band")
+
+    buttons(in: controller.view).first { $0.title == "Use Right" }?.performClick(nil)
+    layout(testWindow, controller)
+    buttons(in: controller.view).first { $0.title == "Save Merge" }?.performClick(nil)
+
+    assertTrue(completed == true, "compact mergetool save reports completion")
+    let saved = try String(contentsOf: merged, encoding: .utf8)
+    var expectedBeforeLines = beforeLines
+    expectedBeforeLines[0] = "edited before 1"
+    expectedBeforeLines[349] = "edited before 350"
+    let expected = (expectedBeforeLines + ["theirs"] + afterLines).joined(separator: "\n") + "\n"
+    assertTrue(saved == expected, "compact context save preserves omitted unchanged lines")
+}
+
 private func testMainWindowGitModeSavesAndStagesSelectedConflict() throws {
     let repo = try makeConflictedRepository("git-ui-conflict")
 
@@ -1557,6 +1859,7 @@ private enum SwiftTests {
             try testPickingSmallerConflictKeepsLeftAndRightRowsVisible()
             try testLongLineSlidersMoveAllPanesTogetherWithoutChangingPaneWidths()
             try testMainWindowGitMergeToolSaveWritesMergedPath()
+            try testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave()
             try testMainWindowGitModeSavesAndStagesSelectedConflict()
         } catch {
             fputs("Swift test failed: \(error.localizedDescription)\n", stderr)
