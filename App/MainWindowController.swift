@@ -126,6 +126,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     var paneStates = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, PaneHorizontalState()) })
     var paneTextClipViews = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, [PaneTextClipView]()) })
     var paneColumnViews = [DiffPane: PaneColumnView]()
+    var paneLineNumberViews = [DiffPane: NSView]()
     var renderedBlockRows = [Int: BlockRenderRows]()
     var compactContextExpansions = [Int: CompactContextExpansion]()
     weak var mergedTextView: NSTextView?

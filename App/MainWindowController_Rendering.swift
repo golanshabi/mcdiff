@@ -8,6 +8,7 @@ extension MainWindowController {
         phases.append(timed("clearViews") {
             paneTextClipViews = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, [PaneTextClipView]()) })
             paneColumnViews = [:]
+            paneLineNumberViews = [:]
             renderedBlockRows = [:]
             mergedTextView = nil
             mergedTextRanges = []
@@ -66,6 +67,7 @@ extension MainWindowController {
 
     func pickButtonColumn(for slots: [BlockRenderSlot], picksLeft: Bool) -> NSView {
         let column = NSStackView()
+        column.identifier = NSUserInterfaceItemIdentifier(picksLeft ? "leftPickButtonColumn" : "rightPickButtonColumn")
         column.orientation = .vertical
         column.spacing = 0
         column.widthAnchor.constraint(equalToConstant: pickButtonSlotWidth).isActive = true
@@ -79,6 +81,7 @@ extension MainWindowController {
 
     func pickButtonSlot(_ block: MDBlock, picksLeft: Bool, rowCount: Int) -> NSView {
         let view = NSView()
+        view.identifier = NSUserInterfaceItemIdentifier("pickButtonSlot")
         view.heightAnchor.constraint(equalToConstant: CGFloat(rowCount) * lineHeight).isActive = true
 
         if block.kind == .changed {
@@ -140,6 +143,7 @@ extension MainWindowController {
                 numbers.maximumNumberOfLines = 0
                 numbers.widthAnchor.constraint(equalToConstant: lineNumberWidth).isActive = true
                 layout.addArrangedSubview(numbers)
+                paneLineNumberViews[pane] = numbers
             } else {
                 let numbers = PaneLineNumberView(lineNumberLines: content.lineNumberLines,
                                                  controls: content.lineNumberControls,
@@ -151,6 +155,7 @@ extension MainWindowController {
                 numbers.identifier = numberIdentifier
                 numbers.widthAnchor.constraint(equalToConstant: lineNumberWidth).isActive = true
                 layout.addArrangedSubview(numbers)
+                paneLineNumberViews[pane] = numbers
             }
         }
 

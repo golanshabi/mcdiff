@@ -245,6 +245,69 @@ func testManualMergedEditCanBreakLineAtEndOfChangedLine() throws {
                "line break at the end creates a real blank manual line")
 }
 
+func testRepeatedNewlineMergedEditDoesNotRerenderTextView() throws {
+    let files = try temporaryDirectory("manual-newline-no-rerender")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let initialMerged = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists before repeated newline edit")
+        return
+    }
+
+    replaceText(in: initialMerged,
+                range: NSRange(location: ("alpha\n" as NSString).length, length: 0),
+                with: "\n",
+                "first newline edit is accepted")
+    layout(testWindow, controller)
+
+    guard let afterFirstEdit = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists after first newline edit")
+        return
+    }
+    assertTrue(afterFirstEdit === initialMerged, "first newline edit grows rows without rebuilding the merged text view")
+
+    replaceText(in: afterFirstEdit,
+                range: afterFirstEdit.selectedRange(),
+                with: "\n",
+                "second newline edit is accepted")
+    layout(testWindow, controller)
+
+    guard let afterSecondEdit = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists after second newline edit")
+        return
+    }
+    assertTrue(afterSecondEdit === initialMerged, "repeated newline edit keeps the existing merged text view")
+    assertTrue(controller.renderedBlockRows[1]?.rowCount == 3, "changed block row metadata grows inline")
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["alpha", "", "", "", "omega"],
+               "merged pane keeps the inserted blank lines")
+    assertTrue(textLines(in: controller.view, identifier: "leftSide") == ["alpha", "left", "", "", "omega"],
+               "left pane receives alignment padding without a full rerender")
+    assertTrue(textLines(in: controller.view, identifier: "rightSide") == ["alpha", "right", "", "", "omega"],
+               "right pane receives alignment padding without a full rerender")
+
+    undoMergedText(in: controller, "merged text view exists for repeated newline undo")
+    layout(testWindow, controller)
+
+    guard let afterUndo = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists after repeated newline undo")
+        return
+    }
+    assertTrue(afterUndo === initialMerged, "newline undo shrinks rows without rebuilding the merged text view")
+    assertTrue(controller.renderedBlockRows[1]?.rowCount == 2, "changed block row metadata shrinks inline")
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["alpha", "", "", "omega"],
+               "merged pane removes one inserted blank line")
+}
+
 func testRebreakingLineMergedFromChangedAndEqualRowsRestoresBoundary() throws {
     let files = try temporaryDirectory("rebreak-changed-equal")
     let left = files.appendingPathComponent("left.txt")
@@ -417,6 +480,46 @@ func testMergedEditAllowsEqualRows() throws {
                "equal-row edit appears in merged pane")
     let save = buttons(in: controller.view).first { $0.title == "Save Result" }
     assertTrue(save?.isEnabled == true, "manual equal-row edit can be saved")
+}
+
+func testNewlineEditInEqualRowsKeepsCaretVisible() throws {
+    let files = try temporaryDirectory("equal-newline-caret")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nbeta\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nbeta\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let initialMerged = textViews(in: controller.view, identifier: "mergedSide").first,
+          let alphaRange = nsRange(of: "alpha", in: initialMerged.string) else {
+        assertTrue(false, "merged pane renders equal alpha text")
+        return
+    }
+
+    let insertion = NSRange(location: NSMaxRange(alphaRange), length: 0)
+    replaceText(in: initialMerged,
+                range: insertion,
+                with: "\n",
+                "equal row accepts newline edit")
+    layout(testWindow, controller)
+
+    guard let afterEdit = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists after equal newline edit")
+        return
+    }
+    assertTrue(afterEdit === initialMerged, "equal row newline edit keeps the existing text view")
+    assertTrue(afterEdit.selectedRange().location == insertion.location + 1,
+               "caret remains at the insertion point after equal row newline edit")
+    assertTrue(controller.view.window?.firstResponder === afterEdit,
+               "merged text view remains first responder after equal row newline edit")
+    assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["alpha", "", "beta"],
+               "equal row newline edit updates merged text in place")
 }
 
 func testUndoPreservesCaretInsideEqualRows() throws {

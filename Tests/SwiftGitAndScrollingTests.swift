@@ -211,6 +211,29 @@ func testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave() throws {
         assertTrue(false, "merged text view exists after second unchanged context character")
         return
     }
+    guard let editedXYRange = nsRange(of: "edited before 1XY", in: afterSecondCharacter.string) else {
+        assertTrue(false, "top compact context edit contains both appended characters")
+        return
+    }
+    replaceText(in: afterSecondCharacter,
+                range: NSRange(location: NSMaxRange(editedXYRange), length: 0),
+                with: "\n",
+                "top compact context newline edit is accepted")
+    layout(testWindow, controller)
+    guard let afterTopNewline = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists after top compact context newline")
+        return
+    }
+    assertTrue(afterTopNewline === afterSecondCharacter,
+               "top compact context newline updates in place")
+    undoMergedText(in: controller, "merged text view exists for compact context newline undo")
+    layout(testWindow, controller)
+    guard let afterTopNewlineUndo = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists after compact context newline undo")
+        return
+    }
+    assertTrue(afterTopNewlineUndo === afterTopNewline,
+               "top compact context newline undo updates in place")
     undoMergedText(in: controller, "merged text view exists for compact unchanged context undo")
     layout(testWindow, controller)
     guard let afterFirstUndo = textViews(in: controller.view, identifier: "mergedSide").first else {

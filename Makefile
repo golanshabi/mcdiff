@@ -32,6 +32,8 @@ SWIFT_TEST_APP_FILES := \
 	App/MainWindowController.swift \
 	App/MainWindowController_Rendering.swift \
 	App/MainWindowController_MergeEditing.swift \
+	App/MainWindowController_InlineRendering.swift \
+	App/MainWindowController_UndoLogging.swift \
 	App/MainWindowController_Git.swift \
 	App/MainWindowController_HorizontalScrolling.swift \
 	App/MainWindowController_Utilities.swift

@@ -167,8 +167,8 @@ final class PaneColumnView: NSView {
 }
 
 final class PaneLineNumberView: NSView {
-    private let lineNumberLines: [String]
-    private let controls: [Int: PaneLineNumberControl]
+    private var lineNumberLines: [String]
+    private var controls: [Int: PaneLineNumberControl]
     private let font: NSFont
     private let controlFont: NSFont
     private let lineHeight: CGFloat
@@ -201,6 +201,15 @@ final class PaneLineNumberView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("PaneLineNumberView does not support storyboards")
+    }
+
+    func update(lineNumberLines: [String], controls: [Int: PaneLineNumberControl]) {
+        self.lineNumberLines = lineNumberLines
+        self.controls = controls
+        setAccessibilityLabel(displayLines.joined(separator: "\n"))
+        invalidateIntrinsicContentSize()
+        needsDisplay = true
+        resetCursorRects()
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -411,6 +420,42 @@ final class PaneTextClipView: NSView {
         superview?.displayIfNeeded()
     }
 
+    func replaceText(_ text: String, preserveSelection: Bool = false) {
+        let font = textView.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let selection = textView.selectedRange()
+        if textView.string != text {
+            textView.textStorage?.setAttributedString(PaneTextClipView.attributedString(for: text,
+                                                                                        font: font,
+                                                                                        lineHeight: lineHeight))
+        }
+        refreshTextLayoutForCurrentText()
+        if preserveSelection {
+            let length = (textView.string as NSString).length
+            textView.setSelectedRange(NSRange(location: min(selection.location, length),
+                                              length: min(selection.length, max(length - min(selection.location, length), 0))))
+        }
+    }
+
+    func refreshTextLayoutForCurrentText() {
+        let font = textView.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let measuredText = textView.string.isEmpty ? " " : textView.string
+        textSize = PaneTextClipView.measuredSize(for: measuredText, font: font, lineHeight: lineHeight)
+        invalidateIntrinsicContentSize()
+        needsLayout = true
+        if let layoutManager = textView.layoutManager,
+           let textContainer = textView.textContainer {
+            let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
+            layoutManager.invalidateLayout(forCharacterRange: fullRange, actualCharacterRange: nil)
+            layoutManager.invalidateDisplay(forCharacterRange: fullRange)
+            layoutManager.ensureLayout(for: textContainer)
+        }
+        setNeedsDisplay(bounds)
+        textView.setNeedsDisplay(textView.bounds)
+        textView.needsDisplay = true
+        needsDisplay = true
+        superview?.needsDisplay = true
+    }
+
     private static func measuredSize(for text: String, font: NSFont, lineHeight: CGFloat) -> NSSize {
         let lines = text.components(separatedBy: "\n")
         let maxWidth = lines
@@ -435,4 +480,3 @@ final class PaneTextClipView: NSView {
         ])
     }
 }
-
