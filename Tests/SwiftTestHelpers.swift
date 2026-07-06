@@ -273,6 +273,14 @@ func nsRange(of needle: String, in text: String) -> NSRange? {
     return NSRange(range, in: text)
 }
 
+func selectionIsAtLineStart(_ textView: NSTextView) -> Bool {
+    let location = textView.selectedRange().location
+    let text = textView.string as NSString
+    guard location >= 0, location <= text.length else { return false }
+    guard location > 0 else { return true }
+    return text.substring(with: NSRange(location: location - 1, length: 1)) == "\n"
+}
+
 func textLabelOrigins(in view: NSView, clipIdentifier: String) -> [CGFloat] {
     views(in: view, identifier: clipIdentifier).compactMap { clip in
         allSubviews(of: clip).compactMap { ($0 as? NSTextView)?.frame.origin.x }.first

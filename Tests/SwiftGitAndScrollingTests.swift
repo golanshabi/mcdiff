@@ -304,12 +304,18 @@ func testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave() throws {
                "second lower compact context undo removes the previous character")
     assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("edited before 350X"),
                "second lower compact context undo does not jump to another range")
+    guard let beforeExpansion = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists before compact context expansion")
+        return
+    }
     clickLineNumberControl(in: controller.view,
                            identifier: "leftSideLineNumbers",
                            symbol: "↑",
                            window: testWindow,
                            "clicking top gutter control loads more context")
     layout(testWindow, controller)
+    assertTrue(textViews(in: controller.view, identifier: "mergedSide").first === beforeExpansion,
+               "top context expansion updates in place")
 
     let expandedLines = textLines(in: controller.view, identifier: "mergedSide")
     assertTrue(expandedLines.contains("before 120"),
@@ -325,6 +331,8 @@ func testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave() throws {
                            window: testWindow,
                            "clicking bottom gutter control loads more context")
     layout(testWindow, controller)
+    assertTrue(textViews(in: controller.view, identifier: "mergedSide").first === beforeExpansion,
+               "bottom context expansion updates in place")
     let bottomExpandedLines = textLines(in: controller.view, identifier: "mergedSide")
     assertTrue(bottomExpandedLines.contains("before 231"),
                "bottom expansion reveals 20 more context lines from the lower hidden side")
@@ -337,6 +345,8 @@ func testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave() throws {
                            window: testWindow,
                            "clicking full gutter control loads all hidden context")
     layout(testWindow, controller)
+    assertTrue(textViews(in: controller.view, identifier: "mergedSide").first === beforeExpansion,
+               "full context expansion updates in place")
     let fullyExpandedLines = textLines(in: controller.view, identifier: "mergedSide")
     assertTrue(fullyExpandedLines.contains("before 200"),
                "full expansion reveals all hidden context")
@@ -345,6 +355,8 @@ func testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave() throws {
 
     pickButton(in: controller.view, picksLeft: false)?.performClick(nil)
     layout(testWindow, controller)
+    assertTrue(textViews(in: controller.view, identifier: "mergedSide").first === beforeExpansion,
+               "picking a side after expansion updates in place")
     buttons(in: controller.view).first { $0.title == "Save Merge" }?.performClick(nil)
 
     assertTrue(completed == true, "compact mergetool save reports completion")
@@ -354,6 +366,60 @@ func testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave() throws {
     expectedBeforeLines[349] = "edited before 350"
     let expected = (expectedBeforeLines + ["theirs"] + afterLines).joined(separator: "\n") + "\n"
     assertTrue(saved == expected, "compact context save preserves omitted unchanged lines")
+}
+
+func testRepeatedNewlineInCompactSuffixKeepsCaretAtLineStart() throws {
+    let files = try temporaryDirectory("git-mergetool-compact-suffix-caret")
+    let base = files.appendingPathComponent("base.txt")
+    let local = files.appendingPathComponent("local.txt")
+    let remote = files.appendingPathComponent("remote.txt")
+    let merged = files.appendingPathComponent("merged.txt")
+    try "base\n".write(to: base, atomically: true, encoding: .utf8)
+    try "ours\n".write(to: local, atomically: true, encoding: .utf8)
+    try "theirs\n".write(to: remote, atomically: true, encoding: .utf8)
+
+    let beforeLines = (1...350).map { "before \($0)" }
+    let conflicted = (beforeLines + [
+        "<<<<<<< HEAD",
+        "ours",
+        "=======",
+        "theirs",
+        ">>>>>>> branch"
+    ]).joined(separator: "\n") + "\n"
+    try conflicted.write(to: merged, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.loadGitMergeTool(base: base, local: local, remote: remote, merged: merged)
+    layout(testWindow, controller)
+
+    guard let initialMerged = textViews(in: controller.view, identifier: "mergedSide").first,
+          let suffixRange = nsRange(of: "before 325", in: initialMerged.string) else {
+        assertTrue(false, "compact suffix line before the diff is visible")
+        return
+    }
+
+    var textView = initialMerged
+    var insertion = NSRange(location: NSMaxRange(suffixRange), length: 0)
+    for index in 1...3 {
+        replaceText(in: textView,
+                    range: insertion,
+                    with: "\n",
+                    "compact suffix accepts repeated newline \(index)")
+        layout(testWindow, controller)
+        guard let afterEdit = textViews(in: controller.view, identifier: "mergedSide").first else {
+            assertTrue(false, "merged text view exists after compact suffix newline \(index)")
+            return
+        }
+        assertTrue(afterEdit === initialMerged,
+                   "compact suffix newline \(index) updates in place")
+        assertTrue(selectionIsAtLineStart(afterEdit),
+                   "compact suffix newline \(index) keeps the caret at the next line start")
+        textView = afterEdit
+        insertion = afterEdit.selectedRange()
+    }
 }
 
 func testMainWindowGitModeSavesAndStagesSelectedConflict() throws {

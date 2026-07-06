@@ -94,9 +94,19 @@ func testMainWindowLoadsAndPicksDiff() throws {
                "left arrow sits between the left and middle panes")
     assertTrue(useRightFrame.midX > mergedPaneFrame.maxX && useRightFrame.midX < rightPaneFrame.minX,
                "right arrow sits between the middle and right panes")
+    guard let mergedTextViewBeforePick = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists before picking a side")
+        return
+    }
     useRight.performClick(nil)
     layout(testWindow, controller)
 
+    guard let mergedTextViewAfterPick = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists after picking a side")
+        return
+    }
+    assertTrue(mergedTextViewAfterPick === mergedTextViewBeforePick,
+               "picking a side updates the merged text view in place")
     let save = buttons(in: controller.view).first { $0.title == "Save Result" }
     assertTrue(save?.isEnabled == true, "save enables after picking a changed block")
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "rightSide"), blueAtLeast: 0.7), "picked right side is blue")

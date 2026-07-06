@@ -308,6 +308,42 @@ func testRepeatedNewlineMergedEditDoesNotRerenderTextView() throws {
                "merged pane removes one inserted blank line")
 }
 
+func testWideMergedEditDoesNotRerenderTextView() throws {
+    let files = try temporaryDirectory("manual-wide-no-rerender")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let initialMerged = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists before wide edit")
+        return
+    }
+
+    let longLine = String(repeating: "wide", count: 80)
+    replaceText(in: initialMerged,
+                range: NSRange(location: ("alpha\n" as NSString).length, length: 0),
+                with: longLine,
+                "wide manual edit is accepted")
+    layout(testWindow, controller)
+
+    guard let afterEdit = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists after wide edit")
+        return
+    }
+    assertTrue(afterEdit === initialMerged, "wide edit updates the merged text view in place")
+    assertTrue(afterEdit.string.contains(longLine), "wide edit appears in merged text")
+    assertTrue(horizontalControl(in: controller.view, identifier: "mergedSideHorizontalScroller")?.isEnabled == true,
+               "wide edit updates shared horizontal scrolling")
+}
+
 func testRebreakingLineMergedFromChangedAndEqualRowsRestoresBoundary() throws {
     let files = try temporaryDirectory("rebreak-changed-equal")
     let left = files.appendingPathComponent("left.txt")
@@ -700,6 +736,10 @@ func testCrossBlockMergedEditUndoRestoresEveryAffectedBlock() throws {
                 with: "whole",
                 "cross-block edit is accepted before undo")
     layout(testWindow, controller)
+    guard let afterCrossBlockEdit = textViews(in: controller.view, identifier: "mergedSide").first else {
+        assertTrue(false, "merged text view exists after cross-block edit")
+        return
+    }
 
     let editedText = text(in: controller.view, identifier: "mergedSide")
     assertTrue(editedText.contains("whole"), "cross-block edit inserts replacement text before undo")
@@ -709,6 +749,8 @@ func testCrossBlockMergedEditUndoRestoresEveryAffectedBlock() throws {
     undoMergedText(in: controller, "merged text view exists for cross-block undo")
     layout(testWindow, controller)
 
+    assertTrue(textViews(in: controller.view, identifier: "mergedSide").first === afterCrossBlockEdit,
+               "cross-block undo restores content without rebuilding the merged text view")
     assertTrue(textLines(in: controller.view, identifier: "mergedSide") == ["alpha", "", "omega"],
                "undoing a cross-block edit restores equal text and the unresolved changed row")
     assertTrue(buttons(in: controller.view).first { $0.title == "Save Result" }?.isEnabled == false,

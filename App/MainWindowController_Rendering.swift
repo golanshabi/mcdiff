@@ -534,7 +534,9 @@ extension MainWindowController {
         block.pick = sender.picksLeft ? .left : .right
         block.manualLines = []
         AppLogger.info("Picked \(sender.picksLeft ? "left" : "right") for changed block left_start=\(block.leftStartLine) right_start=\(block.rightStartLine)")
-        render(preservingVerticalPosition: true)
+        if !refreshRenderedPanesAfterInlineRenderPlanEdit(updateContentWidths: true) {
+            render(preservingVerticalPosition: true)
+        }
         updateButtons()
     }
 
@@ -565,7 +567,9 @@ extension MainWindowController {
         }
 
         compactContextExpansions[blockIndex] = normalizedCompactContextExpansion(expansion, lineCount: lineCount)
-        render(preservingVerticalPosition: true)
+        if !refreshRenderedPanesAfterInlineRenderPlanEdit(updateContentWidths: true) {
+            render(preservingVerticalPosition: true)
+        }
     }
 
     func normalizedCompactContextExpansion(_ expansion: CompactContextExpansion,

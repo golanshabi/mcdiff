@@ -66,6 +66,8 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     struct PendingMergedSelection {
         let blockIndex: Int
         let sourceLineRange: NSRange?
+        let sourceLineLocation: Int?
+        let sourceColumn: Int?
         let relativeLocation: Int
         let length: Int
     }

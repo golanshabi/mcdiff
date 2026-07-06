@@ -2,16 +2,30 @@ import AppKit
 
 extension MainWindowController {
     func shouldRefreshRenderPlanInline(for decision: MergedEditRenderDecision) -> Bool {
-        decision.reason == "inline_row_count" ||
-            decision.reason == "inline_source_line_count"
+        decision.reason.hasPrefix("inline_")
+    }
+
+    func shouldUpdateContentWidthsInline(for decision: MergedEditRenderDecision) -> Bool {
+        decision.reason.contains("width")
+    }
+
+    func canInlineRenderPlanStructureEdit(edit: PendingMergedEdit,
+                                          block: MDBlock,
+                                          editedLines: [String]) -> Bool {
+        guard edit.ranges.count == 1,
+              block.kind == .changed || block.kind == .equal,
+              !editedLines.isEmpty else {
+            return false
+        }
+        return true
     }
 
     func canInlineRenderPlanEdit(edit: PendingMergedEdit,
                                  block: MDBlock,
                                  editedLines: [String]) -> Bool {
-        guard edit.ranges.count == 1,
-              block.kind == .changed || block.kind == .equal,
-              !editedLines.isEmpty else {
+        guard canInlineRenderPlanStructureEdit(edit: edit,
+                                               block: block,
+                                               editedLines: editedLines) else {
             return false
         }
 
@@ -19,16 +33,38 @@ extension MainWindowController {
         return maxEditedWidth <= sharedMaxContentWidth() + 1
     }
 
-    func refreshRenderedPanesAfterInlineRenderPlanEdit() -> Bool {
+    func refreshRenderedPanesAfterInlineRenderPlanEdit(updateContentWidths: Bool = false) -> Bool {
         guard let document else { return false }
         let previousVisibleOrigin = scroll.contentView.bounds.origin
+        let pendingBeforeRefresh = pendingMergedSelection
+        let selectionBeforeRefresh = mergedTextSelectionDetailLog()
+        let rangeBeforeRefresh = mergedTextRangeAtSelectionLog()
+        let oldRangeCount = mergedTextRanges.count
+        let oldRowCount = renderedBlockRows.count
+        if updateContentWidths {
+            updatePaneContentWidths()
+        }
         let plan = renderPlan(for: document)
-        guard canApplyRenderPlanInline(plan) else { return false }
+        let exactPlanRange = pendingBeforeRefresh.flatMap { pending in
+            plan.mergedTextRanges.first(where: { mergedRange($0, matches: pending) })
+        }
+        let sameBlockPlanRange = pendingBeforeRefresh.flatMap { pending in
+            plan.mergedTextRanges.first(where: { $0.blockIndex == pending.blockIndex })
+        }
+        guard canApplyRenderPlanInline(plan) else {
+            if pendingBeforeRefresh != nil {
+                AppLogger.info("MERGE_INLINE_REFRESH result=skipped reason=can_apply updateWidths=\(updateContentWidths) pending=\(pendingSelectionLog(pendingBeforeRefresh)) selectionBefore=\(selectionBeforeRefresh) rangeBefore=\(rangeBeforeRefresh) exactPlanRange=\(mergedTextRangeLog(exactPlanRange)) sameBlockPlanRange=\(mergedTextRangeLog(sameBlockPlanRange))")
+            }
+            return false
+        }
 
         for pane in DiffPane.allCases {
             guard let content = plan.panes[pane],
                   let clip = paneTextClipViews[pane]?.first,
                   let column = paneColumnViews[pane] else {
+                if pendingBeforeRefresh != nil {
+                    AppLogger.info("MERGE_INLINE_REFRESH result=skipped reason=missing_pane pane=\(pane.identifier) updateWidths=\(updateContentWidths) pending=\(pendingSelectionLog(pendingBeforeRefresh)) selectionBefore=\(selectionBeforeRefresh) rangeBefore=\(rangeBeforeRefresh)")
+                }
                 return false
             }
 
@@ -51,16 +87,31 @@ extension MainWindowController {
         markInlineRenderPlanViewsDirty()
         scroll.contentView.scroll(to: previousVisibleOrigin)
         scroll.reflectScrolledClipView(scroll.contentView)
+        if pendingBeforeRefresh != nil {
+            AppLogger.info("MERGE_INLINE_REFRESH result=applied updateWidths=\(updateContentWidths) pending=\(pendingSelectionLog(pendingBeforeRefresh)) selectionBefore=\(selectionBeforeRefresh) selectionAfter=\(mergedTextSelectionDetailLog()) rangeBefore=\(rangeBeforeRefresh) rangeAfter=\(mergedTextRangeAtSelectionLog()) exactPlanRange=\(mergedTextRangeLog(exactPlanRange)) sameBlockPlanRange=\(mergedTextRangeLog(sameBlockPlanRange)) ranges=\(oldRangeCount)->\(mergedTextRanges.count) rows=\(oldRowCount)->\(renderedBlockRows.count) scrollY=\(format(previousVisibleOrigin.y))->\(format(scroll.contentView.bounds.origin.y))")
+        }
         return true
     }
 
-    func refreshRenderedPanesAfterInlineUndoRenderPlanEdit(oldRows: BlockRenderRows) -> Bool {
+    func refreshRenderedPanesAfterInlineMergedEdit(updateContentWidths: Bool = false) -> Bool {
         let previousVisibleOrigin = scroll.contentView.bounds.origin
-        guard refreshRenderedPanesAfterInlineRenderPlanEdit() else { return false }
+        guard refreshRenderedPanesAfterInlineRenderPlanEdit(updateContentWidths: updateContentWidths) else { return false }
         restorePendingMergedSelection(scrollRangeToVisible: false)
         scroll.contentView.scroll(to: previousVisibleOrigin)
         scroll.reflectScrolledClipView(scroll.contentView)
-        refreshTopInlineRestoreViewportIfNeeded(oldRows)
+        return true
+    }
+
+    func refreshRenderedPanesAfterInlineUndoRenderPlanEdit(oldRows: BlockRenderRows?,
+                                                           updateContentWidths: Bool = false) -> Bool {
+        let previousVisibleOrigin = scroll.contentView.bounds.origin
+        guard refreshRenderedPanesAfterInlineRenderPlanEdit(updateContentWidths: updateContentWidths) else { return false }
+        restorePendingMergedSelection(scrollRangeToVisible: false)
+        scroll.contentView.scroll(to: previousVisibleOrigin)
+        scroll.reflectScrolledClipView(scroll.contentView)
+        if let oldRows {
+            refreshTopInlineRestoreViewportIfNeeded(oldRows)
+        }
         return true
     }
 
@@ -73,14 +124,9 @@ extension MainWindowController {
             }
 
             if pane != .merged {
-                guard let lineNumberView = paneLineNumberViews[pane],
-                      let content = plan.panes[pane] else {
+                guard paneLineNumberViews[pane] != nil,
+                      plan.panes[pane] != nil else {
                     return false
-                }
-                if content.lineNumberControls.isEmpty {
-                    guard lineNumberView is NSTextField else { return false }
-                } else {
-                    guard lineNumberView is PaneLineNumberView else { return false }
                 }
             }
         }
@@ -108,7 +154,49 @@ extension MainWindowController {
         } else if let numbers = view as? PaneLineNumberView {
             numbers.update(lineNumberLines: content.lineNumberLines,
                            controls: content.lineNumberControls)
+        } else {
+            replaceLineNumberView(for: pane, content: content, previousView: view)
         }
+    }
+
+    func replaceLineNumberView(for pane: DiffPane,
+                               content: PaneRenderContent,
+                               previousView: NSView) {
+        guard let stack = previousView.superview as? NSStackView else { return }
+        let index = stack.arrangedSubviews.firstIndex(of: previousView) ?? 0
+        let replacement = makeLineNumberView(for: pane, content: content, identifier: previousView.identifier)
+        stack.removeArrangedSubview(previousView)
+        previousView.removeFromSuperview()
+        stack.insertArrangedSubview(replacement, at: index)
+        paneLineNumberViews[pane] = replacement
+    }
+
+    func makeLineNumberView(for pane: DiffPane,
+                            content: PaneRenderContent,
+                            identifier: NSUserInterfaceItemIdentifier?) -> NSView {
+        if content.lineNumberControls.isEmpty {
+            let numbers = NSTextField(labelWithString: "")
+            numbers.identifier = identifier
+            numbers.attributedStringValue = attributedLineNumberText(content.lineNumberLines.joined(separator: "\n"))
+            numbers.alignment = .right
+            numbers.textColor = .secondaryLabelColor
+            numbers.font = lineNumberFont
+            numbers.lineBreakMode = .byClipping
+            numbers.maximumNumberOfLines = 0
+            numbers.widthAnchor.constraint(equalToConstant: lineNumberWidth).isActive = true
+            return numbers
+        }
+
+        let numbers = PaneLineNumberView(lineNumberLines: content.lineNumberLines,
+                                         controls: content.lineNumberControls,
+                                         font: lineNumberFont,
+                                         lineHeight: lineHeight,
+                                         clickHandler: { [weak self] blockIndex, action in
+                                             self?.expandCompactContext(blockIndex: blockIndex, action: action)
+                                         })
+        numbers.identifier = identifier
+        numbers.widthAnchor.constraint(equalToConstant: lineNumberWidth).isActive = true
+        return numbers
     }
 
     func updatePickButtonColumns(for plan: RenderPlan) -> Bool {

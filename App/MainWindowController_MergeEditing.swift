@@ -79,14 +79,19 @@ extension MainWindowController {
         let affectedEnd = NSMaxRange(affectedCharRange)
         let unionStart = min(firstRange.characterRange.location, affectedCharRange.location)
         let unionEnd = max(NSMaxRange(lastRange.characterRange), affectedEnd)
+        let replacement = replacementString ?? ""
         pendingMergedEdit = PendingMergedEdit(ranges: ranges,
                                               blockIndexes: ranges.map(\.blockIndex),
                                               oldUnionRange: NSRange(location: unionStart,
                                                                      length: max(unionEnd - unionStart, 0)),
                                               affectedRange: affectedCharRange,
-                                              replacement: replacementString ?? "",
+                                              replacement: replacement,
                                               undoSelection: pendingSelection(from: affectedCharRange,
-                                                                              in: firstRange))
+                                                                              in: firstRange,
+                                                                              text: textView.string as NSString))
+        if replacement.contains("\n") {
+            AppLogger.info("MERGE_EDIT_CAPTURE replacementKind=\(replacementKind(replacement)) affectedRange=\(affectedCharRange.location):\(affectedCharRange.length) oldUnionRange=\(unionStart):\(max(unionEnd - unionStart, 0)) selection=\(mergedTextSelectionDetailLog(textView)) activeRange=\(mergedTextRangeAtSelectionLog(textView)) ranges=\(mergedTextRangesLog(ranges))")
+        }
         return true
     }
 
@@ -143,7 +148,8 @@ extension MainWindowController {
         pendingMergedSelection = pendingSelection(from: textView.selectedRange(),
                                                   blockIndex: firstEditedRange.blockIndex,
                                                   sourceLineRange: firstEditedRange.sourceLineRange,
-                                                  blockRange: newBlockRange)
+                                                  blockRange: newBlockRange,
+                                                  text: text)
         if let boundaryReclaim {
             movePendingSelectionIntoReclaimedBlockIfNeeded(boundaryReclaim)
         }
@@ -161,10 +167,20 @@ extension MainWindowController {
                                                       beforeRowCounts: beforeRowCounts,
                                                       editedLines: editedLines)
         }
+        let traceSelection = edit.replacement.contains("\n") ||
+            shouldRefreshRenderPlanInline(for: renderDecision)
+        if traceSelection {
+            AppLogger.info("MERGE_EDIT_SELECTION stage=before_apply replacementKind=\(replacementKind(edit.replacement)) renderReason=\(renderDecision.reason) renderDetail=\(logToken(renderDecision.detail)) pending=\(pendingSelectionLog(pendingMergedSelection)) selection=\(mergedTextSelectionDetailLog(textView)) activeRange=\(mergedTextRangeAtSelectionLog(textView)) firstEditedRange=\(mergedTextRangeLog(firstEditedRange)) affectedRange=\(edit.affectedRange.location):\(edit.affectedRange.length) oldUnionRange=\(edit.oldUnionRange.location):\(edit.oldUnionRange.length) newBlockRange=\(newBlockRange.location):\(newBlockRange.length) editedLines=\(editedLines.count) boundaryDeletion=\(boundaryDeletion != nil) boundaryReclaim=\(boundaryReclaim != nil)")
+        }
+        var applyRoute = "inline_ranges"
         if renderDecision.shouldRender {
+            applyRoute = "render"
             render(preservingVerticalPosition: true)
         } else if shouldRefreshRenderPlanInline(for: renderDecision) {
-            if !refreshRenderedPanesAfterInlineRenderPlanEdit() {
+            applyRoute = "inline_render_plan"
+            let updateContentWidths = shouldUpdateContentWidthsInline(for: renderDecision)
+            if !refreshRenderedPanesAfterInlineMergedEdit(updateContentWidths: updateContentWidths) {
+                applyRoute = "inline_render_plan_fallback_render"
                 renderDecision = MergedEditRenderDecision(shouldRender: true,
                                                           reason: "\(renderDecision.reason)_fallback",
                                                           detail: "")
@@ -175,6 +191,9 @@ extension MainWindowController {
             updatePaneBackgroundRuns(for: firstBlockIndex)
         }
         updateButtons()
+        if traceSelection {
+            AppLogger.info("MERGE_EDIT_SELECTION stage=after_apply route=\(applyRoute) renderReason=\(renderDecision.reason) pending=\(pendingSelectionLog(pendingMergedSelection)) selection=\(mergedTextSelectionDetailLog(textView)) activeRange=\(mergedTextRangeAtSelectionLog(textView)) firstResponder=\(view.window?.firstResponder === textView)")
+        }
         let elapsed = DispatchTime.now().uptimeNanoseconds - editStart
         logPerformance("edit",
                        phases: [TimedPhase(name: "total", milliseconds: Double(elapsed) / 1_000_000.0)],
@@ -236,6 +255,13 @@ extension MainWindowController {
                                                 reason: "inline_row_count",
                                                 detail: "beforeRows=\(beforeRowCount) afterRows=\(afterRowCount)")
             }
+            if canInlineRenderPlanStructureEdit(edit: edit,
+                                                block: block,
+                                                editedLines: editedLines) {
+                return MergedEditRenderDecision(shouldRender: false,
+                                                reason: "inline_row_count_width",
+                                                detail: "beforeRows=\(beforeRowCount) afterRows=\(afterRowCount)")
+            }
             return MergedEditRenderDecision(shouldRender: true,
                                             reason: "row_count",
                                             detail: "beforeRows=\(beforeRowCount) afterRows=\(afterRowCount)")
@@ -250,6 +276,13 @@ extension MainWindowController {
                                                 reason: "inline_source_line_count",
                                                 detail: "sourceLines=\(sourceLineRange.length) editedLines=\(editedLines.count)")
             }
+            if canInlineRenderPlanStructureEdit(edit: edit,
+                                                block: block,
+                                                editedLines: editedLines) {
+                return MergedEditRenderDecision(shouldRender: false,
+                                                reason: "inline_source_line_count_width",
+                                                detail: "sourceLines=\(sourceLineRange.length) editedLines=\(editedLines.count)")
+            }
             return MergedEditRenderDecision(shouldRender: true,
                                             reason: "source_line_count",
                                             detail: "sourceLines=\(sourceLineRange.length) editedLines=\(editedLines.count)")
@@ -258,6 +291,13 @@ extension MainWindowController {
         let maxEditedWidth = editedLines.map(measuredLineWidth).max() ?? 0
         let maxSharedWidth = sharedMaxContentWidth()
         if maxEditedWidth > maxSharedWidth + 1 {
+            if canInlineRenderPlanStructureEdit(edit: edit,
+                                                block: block,
+                                                editedLines: editedLines) {
+                return MergedEditRenderDecision(shouldRender: false,
+                                                reason: "inline_width",
+                                                detail: "editedWidth=\(format(maxEditedWidth)) sharedWidth=\(format(maxSharedWidth))")
+            }
             return MergedEditRenderDecision(shouldRender: true,
                                             reason: "width",
                                             detail: "editedWidth=\(format(maxEditedWidth)) sharedWidth=\(format(maxSharedWidth))")
@@ -396,295 +436,6 @@ extension MainWindowController {
             block.pick = snapshot.pick
             block.manualLines = snapshot.manualLines
         }
-    }
-
-    func registerMergedUndo(before snapshots: [MergedBlockSnapshot],
-                                    actionName: String,
-                                    restoreSelection: PendingMergedSelection?) {
-        guard !snapshots.isEmpty else { return }
-
-        mergeUndoManager.beginUndoGrouping()
-        mergeUndoManager.registerUndo(withTarget: self) { target in
-            target.restoreMergedSnapshots(snapshots,
-                                          actionName: actionName,
-                                          restoreSelection: restoreSelection)
-        }
-        mergeUndoManager.setActionName(actionName)
-        mergeUndoManager.endUndoGrouping()
-    }
-
-    func restoreMergedSnapshots(_ snapshots: [MergedBlockSnapshot],
-                                        actionName: String,
-                                        restoreSelection: PendingMergedSelection?) {
-        var phases = [TimedPhase]()
-        let blockIndexes = snapshots.map(\.blockIndex)
-        let (redoSnapshots, redoSnapshotPhase) = timed("redoSnapshots") { self.snapshots(for: blockIndexes) }
-        phases.append(redoSnapshotPhase)
-        let (redoSelection, redoSelectionPhase) = timed("redoSelection") {
-            currentMergedSelection(affecting: Set(blockIndexes))
-        }
-        phases.append(redoSelectionPhase)
-        let selectionToRestore = restoreSelection ?? redoSelection
-        let (handledInlineOrRender, restorePhase) = timed("restore") {
-            restoreMergedSnapshotsInlineOrRender(snapshots,
-                                                 restoreSelection: selectionToRestore,
-                                                 actionName: actionName)
-        }
-        phases.append(restorePhase)
-        if handledInlineOrRender {
-            phases.append(timed("updateButtons") { updateButtons() }.1)
-            phases.append(timed("registerUndo") {
-                registerMergedUndo(before: redoSnapshots,
-                                   actionName: actionName,
-                                   restoreSelection: redoSelection)
-            }.1)
-            logPerformance("restoreMergedSnapshots",
-                           phases: phases,
-                           metadata: "action=\(logToken(actionName)) route=inline_or_render snapshots=\(snapshots.count) blocks=\(blockList(blockIndexes)) restoreSelection=\(pendingSelectionLog(selectionToRestore)) selectionAfter=\(mergedTextSelectionLog()) canUndo=\(mergeUndoManager.canUndo) canRedo=\(mergeUndoManager.canRedo)",
-                           minimumTotalMilliseconds: 0)
-            return
-        }
-
-        phases.append(timed("applySnapshots") { apply(snapshots: snapshots) }.1)
-        pendingMergedSelection = selectionToRestore
-        phases.append(timed("render") { render(preservingVerticalPosition: true) }.1)
-        phases.append(timed("updateButtons") { updateButtons() }.1)
-        phases.append(timed("registerUndo") {
-            registerMergedUndo(before: redoSnapshots,
-                               actionName: actionName,
-                               restoreSelection: redoSelection)
-        }.1)
-        logPerformance("restoreMergedSnapshots",
-                       phases: phases,
-                       metadata: "action=\(logToken(actionName)) route=render snapshots=\(snapshots.count) blocks=\(blockList(blockIndexes)) restoreSelection=\(pendingSelectionLog(selectionToRestore)) selectionAfter=\(mergedTextSelectionLog()) canUndo=\(mergeUndoManager.canUndo) canRedo=\(mergeUndoManager.canRedo)",
-                       minimumTotalMilliseconds: 0)
-    }
-
-    func restoreMergedSnapshotsInlineOrRender(_ snapshots: [MergedBlockSnapshot],
-                                                      restoreSelection: PendingMergedSelection?,
-                                                      actionName: String) -> Bool {
-        let restoreStart = DispatchTime.now().uptimeNanoseconds
-        var phases = [TimedPhase]()
-        func logInlineRestore(route: String,
-                              reason: String,
-                              snapshot: MergedBlockSnapshot?,
-                              extra: String = "") {
-            let elapsed = DispatchTime.now().uptimeNanoseconds - restoreStart
-            let loggedPhases = phases.isEmpty
-                ? [TimedPhase(name: "total", milliseconds: Double(elapsed) / 1_000_000.0)]
-                : phases
-            let blockText = snapshot.map { String($0.blockIndex) } ?? "nil"
-            let extraText = extra.isEmpty ? "" : " \(extra)"
-            logPerformance("restoreMergedSnapshotsInline",
-                           phases: loggedPhases,
-                           metadata: "action=\(logToken(actionName)) route=\(route) reason=\(reason) snapshots=\(snapshots.count) block=\(blockText) restoreSelection=\(pendingSelectionLog(restoreSelection)) selection=\(mergedTextSelectionLog())\(extraText)",
-                           minimumTotalMilliseconds: 0)
-        }
-
-        guard snapshots.count == 1 else {
-            logInlineRestore(route: "skipped",
-                             reason: "snapshot_count",
-                             snapshot: snapshots.first)
-            return false
-        }
-        guard let snapshot = snapshots.first else {
-            logInlineRestore(route: "skipped", reason: "missing_snapshot", snapshot: nil)
-            return false
-        }
-        guard let document else {
-            logInlineRestore(route: "skipped", reason: "missing_document", snapshot: snapshot)
-            return false
-        }
-        guard let textView = mergedTextView else {
-            logInlineRestore(route: "skipped", reason: "missing_text_view", snapshot: snapshot)
-            return false
-        }
-        guard snapshot.blockIndex >= 0,
-              snapshot.blockIndex < document.blocks.count else {
-            logInlineRestore(route: "skipped",
-                             reason: "invalid_block",
-                             snapshot: snapshot,
-                             extra: "blocks=\(document.blocks.count)")
-            return false
-        }
-        guard let oldRows = renderedBlockRows[snapshot.blockIndex] else {
-            logInlineRestore(route: "skipped", reason: "missing_rows", snapshot: snapshot)
-            return false
-        }
-
-        let currentText = textView.string as NSString
-        let (oldBlockRangeCandidate, displayRangePhase) = timed("displayRange") {
-            mergedTextDisplayRange(for: snapshot.blockIndex, in: currentText)
-        }
-        phases.append(displayRangePhase)
-        guard let oldBlockRange = oldBlockRangeCandidate else {
-            logInlineRestore(route: "skipped", reason: "missing_display_range", snapshot: snapshot)
-            return false
-        }
-
-        phases.append(timed("applySnapshots") { apply(snapshots: snapshots) }.1)
-        pendingMergedSelection = restoreSelection
-
-        let block = document.blocks[snapshot.blockIndex]
-        let (afterRowCount, rowCountPhase) = timed("rowCount") {
-            renderedRowCount(for: block, blockIndex: snapshot.blockIndex)
-        }
-        phases.append(rowCountPhase)
-        let (newLinesCandidate, mergedLinesPhase) = timed("mergedLines") {
-            renderedMergedLines(for: snapshot.blockIndex)
-        }
-        phases.append(mergedLinesPhase)
-        guard oldRows.rowCount == afterRowCount else {
-            if let newLines = newLinesCandidate {
-                let ((maxNewWidth, maxSharedWidth), widthPhase) = timed("width") {
-                    ((newLines.map(measuredLineWidth).max() ?? 0), sharedMaxContentWidth())
-                }
-                phases.append(widthPhase)
-                if maxNewWidth <= maxSharedWidth + 1 {
-                    let (refreshedInline, inlineRenderPlanPhase) = timed("inlineRenderPlan") {
-                        refreshRenderedPanesAfterInlineUndoRenderPlanEdit(oldRows: oldRows)
-                    }
-                    phases.append(inlineRenderPlanPhase)
-                    if refreshedInline {
-                        logInlineRestore(route: "inline",
-                                         reason: "row_count",
-                                         snapshot: snapshot,
-                                         extra: "rows=\(oldRows.rowCount)->\(afterRowCount)")
-                        return true
-                    }
-                }
-            }
-            phases.append(timed("render") { render(preservingVerticalPosition: true) }.1)
-            logInlineRestore(route: "render",
-                             reason: "row_count",
-                             snapshot: snapshot,
-                             extra: "rows=\(oldRows.rowCount)->\(afterRowCount)")
-            return true
-        }
-        guard let newLines = newLinesCandidate else {
-            phases.append(timed("render") { render(preservingVerticalPosition: true) }.1)
-            logInlineRestore(route: "render", reason: "missing_lines", snapshot: snapshot)
-            return true
-        }
-
-        let ((maxNewWidth, maxSharedWidth), widthPhase) = timed("width") {
-            ((newLines.map(measuredLineWidth).max() ?? 0), sharedMaxContentWidth())
-        }
-        phases.append(widthPhase)
-        guard maxNewWidth <= maxSharedWidth + 1 else {
-            phases.append(timed("render") { render(preservingVerticalPosition: true) }.1)
-            logInlineRestore(route: "render",
-                             reason: "width",
-                             snapshot: snapshot,
-                             extra: "editedWidth=\(format(maxNewWidth)) sharedWidth=\(format(maxSharedWidth))")
-            return true
-        }
-
-        let newText = newLines.joined(separator: "\n")
-        guard NSMaxRange(oldBlockRange) <= currentText.length else {
-            phases.append(timed("render") { render(preservingVerticalPosition: true) }.1)
-            logInlineRestore(route: "render",
-                             reason: "range",
-                             snapshot: snapshot,
-                             extra: "range=\(oldBlockRange.location):\(oldBlockRange.length) textLength=\(currentText.length)")
-            return true
-        }
-
-        phases.append(timed("replaceText") {
-            textView.textStorage?.replaceCharacters(in: oldBlockRange, with: newText)
-            (textView.superview as? PaneTextClipView)?
-                .refreshTextLayout(afterReplacing: oldBlockRange,
-                                   replacementText: newText)
-        }.1)
-        let (plan, renderPlanPhase) = timed("renderPlan") { renderPlan(for: document) }
-        phases.append(renderPlanPhase)
-        phases.append(timed("applyPlan") {
-            mergedTextRanges = plan.mergedTextRanges
-            renderedBlockRows = plan.blockRows
-            updatePaneBackgroundRuns(for: snapshot.blockIndex)
-        }.1)
-        let previousVisibleOrigin = scroll.contentView.bounds.origin
-        phases.append(timed("restoreSelection") {
-            restorePendingMergedSelection(scrollRangeToVisible: false)
-        }.1)
-        phases.append(timed("restoreViewport") {
-            scroll.contentView.scroll(to: previousVisibleOrigin)
-            scroll.reflectScrolledClipView(scroll.contentView)
-            refreshTopInlineRestoreViewportIfNeeded(oldRows)
-        }.1)
-        logInlineRestore(route: "inline",
-                         reason: "ok",
-                         snapshot: snapshot,
-                         extra: "rows=\(oldRows.rowCount) chars=\(oldBlockRange.length)->\((newText as NSString).length)")
-        return true
-    }
-
-    func refreshTopInlineRestoreViewportIfNeeded(_ rows: BlockRenderRows) {
-        guard rows.startRow == 0 else { return }
-
-        stack.needsLayout = true
-        stack.needsDisplay = true
-        scroll.documentView?.needsDisplay = true
-        scroll.contentView.needsDisplay = true
-        view.needsDisplay = true
-        view.layoutSubtreeIfNeeded()
-        scroll.contentView.displayIfNeeded()
-        scroll.documentView?.displayIfNeeded()
-        scroll.displayIfNeeded()
-    }
-
-    func mergedTextDisplayRange(for blockIndex: Int, in text: NSString) -> NSRange? {
-        guard let rows = renderedBlockRows[blockIndex],
-              rows.startRow >= 0,
-              rows.rowCount > 0 else {
-            return nil
-        }
-
-        let targetStartRow = rows.startRow
-        let targetEndRow = rows.startRow + rows.rowCount
-        var rowStarts = [0]
-        var searchLocation = 0
-        while searchLocation < text.length && rowStarts.count <= targetEndRow {
-            let range = NSRange(location: searchLocation, length: text.length - searchLocation)
-            let newline = text.range(of: "\n", options: [], range: range)
-            guard newline.location != NSNotFound else { break }
-            searchLocation = NSMaxRange(newline)
-            rowStarts.append(searchLocation)
-        }
-
-        guard targetStartRow < rowStarts.count else { return nil }
-
-        let location = rowStarts[targetStartRow]
-        let end: Int
-        if targetEndRow < rowStarts.count {
-            end = max(rowStarts[targetEndRow] - 1, location)
-        } else {
-            end = text.length
-        }
-        return NSRange(location: location, length: max(end - location, 0))
-    }
-
-    func renderedMergedLines(for blockIndex: Int) -> [String]? {
-        guard let document,
-              blockIndex >= 0,
-              blockIndex < document.blocks.count else {
-            return nil
-        }
-
-        let block = document.blocks[blockIndex]
-        let displayed = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map {
-            ($0, displayedContent(for: block, blockIndex: blockIndex, pane: $0, mergedStartLine: 1))
-        })
-        let rowCount = renderRowCount(for: block, displayed: displayed)
-        guard var lines = displayed[.merged]?.lines else { return nil }
-        lines = mergedContentLines(for: block, lines: lines)
-        if lines.count > rowCount {
-            lines = Array(lines.prefix(rowCount))
-        }
-        if lines.count < rowCount {
-            lines.append(contentsOf: Array(repeating: "", count: rowCount - lines.count))
-        }
-        return lines
     }
 
     func mergedTextRanges(affectedBy affectedRange: NSRange) -> [MergedBlockTextRange] {
@@ -909,6 +660,8 @@ extension MainWindowController {
 
         pendingMergedSelection = PendingMergedSelection(blockIndex: reclaim.nextBlockIndex,
                                                         sourceLineRange: nil,
+                                                        sourceLineLocation: nil,
+                                                        sourceColumn: nil,
                                                         relativeLocation: selection.relativeLocation - reclaim.suffixStartOffset,
                                                         length: selection.length)
     }
@@ -927,44 +680,154 @@ extension MainWindowController {
         guard let rangeIndex = mergedTextRangeIndex(at: textView.selectedRange().location) else { return nil }
         let range = mergedTextRanges[rangeIndex]
         guard blockIndexes.contains(range.blockIndex) else { return nil }
-        return pendingSelection(from: textView.selectedRange(), in: range)
+        return pendingSelection(from: textView.selectedRange(),
+                                in: range,
+                                text: textView.string as NSString)
     }
 
     func pendingSelection(from selection: NSRange,
-                                  in range: MergedBlockTextRange) -> PendingMergedSelection {
+                                  in range: MergedBlockTextRange,
+                                  text: NSString? = nil) -> PendingMergedSelection {
         pendingSelection(from: selection,
                          blockIndex: range.blockIndex,
                          sourceLineRange: range.sourceLineRange,
-                         blockRange: range.characterRange)
+                         blockRange: range.characterRange,
+                         text: text)
     }
 
     func pendingSelection(from selection: NSRange,
                                   blockIndex: Int,
                                   sourceLineRange: NSRange?,
-                                  blockRange: NSRange) -> PendingMergedSelection {
+                                  blockRange: NSRange,
+                                  text: NSString? = nil) -> PendingMergedSelection {
         let relativeLocation = min(max(selection.location - blockRange.location, 0), blockRange.length)
         let length = min(selection.length, max(blockRange.length - relativeLocation, 0))
+        let sourcePosition = pendingSourcePosition(relativeLocation: relativeLocation,
+                                                   sourceLineRange: sourceLineRange,
+                                                   blockRange: blockRange,
+                                                   text: text)
         return PendingMergedSelection(blockIndex: blockIndex,
                                       sourceLineRange: sourceLineRange,
+                                      sourceLineLocation: sourcePosition?.lineLocation,
+                                      sourceColumn: sourcePosition?.column,
                                       relativeLocation: relativeLocation,
                                       length: length)
+    }
+
+    func pendingSourcePosition(relativeLocation: Int,
+                               sourceLineRange: NSRange?,
+                               blockRange: NSRange,
+                               text: NSString?) -> (lineLocation: Int, column: Int)? {
+        guard let sourceLineRange,
+              let text,
+              NSMaxRange(blockRange) <= text.length else { return nil }
+
+        let safeRelativeLocation = min(max(relativeLocation, 0), blockRange.length)
+        let localText = text.substring(with: blockRange) as NSString
+        var row = 0
+        var lineStart = 0
+        var searchLocation = 0
+
+        while searchLocation < safeRelativeLocation {
+            let searchRange = NSRange(location: searchLocation,
+                                      length: safeRelativeLocation - searchLocation)
+            let newline = localText.range(of: "\n", options: [], range: searchRange)
+            guard newline.location != NSNotFound else { break }
+            row += 1
+            lineStart = NSMaxRange(newline)
+            searchLocation = lineStart
+        }
+
+        return (sourceLineRange.location + row,
+                safeRelativeLocation - lineStart)
     }
 
     func restorePendingMergedSelection(scrollRangeToVisible: Bool = true) {
         guard let selection = pendingMergedSelection else { return }
         pendingMergedSelection = nil
-        guard let textView = mergedTextView,
-              let range = mergedTextRanges.first(where: { mergedRange($0, matches: selection) })
-                ?? mergedTextRanges.first(where: { $0.blockIndex == selection.blockIndex }) else { return }
+        guard let textView = mergedTextView else {
+            AppLogger.info("MERGE_SELECTION_RESTORE result=skipped reason=missing_text_view pending=\(pendingSelectionLog(selection))")
+            return
+        }
+        let selectionBeforeRestore = mergedTextSelectionDetailLog(textView)
+        let sourcePositionRange = mergedTextRange(containingSourcePosition: selection)
+        let exactRange = mergedTextRanges.first(where: { mergedRange($0, matches: selection) })
+        let sameBlockRange = mergedTextRanges.first(where: { $0.blockIndex == selection.blockIndex })
+        guard let range = sourcePositionRange ?? exactRange ?? sameBlockRange else {
+            AppLogger.info("MERGE_SELECTION_RESTORE result=skipped reason=missing_range pending=\(pendingSelectionLog(selection)) selectionBefore=\(selectionBeforeRestore)")
+            return
+        }
 
-        let relativeLocation = min(selection.relativeLocation, range.characterRange.length)
-        let length = min(selection.length, max(range.characterRange.length - relativeLocation, 0))
-        let restored = NSRange(location: range.characterRange.location + relativeLocation, length: length)
+        let sourceLocation = sourcePositionRange.flatMap {
+            characterLocation(forSourcePosition: selection,
+                              in: $0,
+                              text: textView.string as NSString)
+        }
+        let restoredLocation: Int
+        let match: String
+        if let sourceLocation {
+            restoredLocation = sourceLocation
+            match = "source_position"
+        } else {
+            let relativeLocation = min(selection.relativeLocation, range.characterRange.length)
+            restoredLocation = range.characterRange.location + relativeLocation
+            match = exactRange == nil ? "same_block" : "exact"
+        }
+        let length = min(selection.length, max((textView.string as NSString).length - restoredLocation, 0))
+        let restored = NSRange(location: restoredLocation, length: length)
         view.window?.makeFirstResponder(textView)
         textView.setSelectedRange(restored)
         if scrollRangeToVisible {
             textView.scrollRangeToVisible(restored)
         }
+        AppLogger.info("MERGE_SELECTION_RESTORE result=applied match=\(match) scrollToVisible=\(scrollRangeToVisible) pending=\(pendingSelectionLog(selection)) selectionBefore=\(selectionBeforeRestore) targetRange=\(mergedTextRangeLog(range)) restored=\(restored.location):\(restored.length):\(textPositionLog(location: restored.location, in: textView.string as NSString)) selectionAfter=\(mergedTextSelectionDetailLog(textView))")
+    }
+
+    func mergedTextRange(containingSourcePosition selection: PendingMergedSelection) -> MergedBlockTextRange? {
+        guard let sourceLineLocation = selection.sourceLineLocation else { return nil }
+        return mergedTextRanges.first { range in
+            guard range.blockIndex == selection.blockIndex,
+                  range.isEditable,
+                  let sourceLineRange = range.sourceLineRange else { return false }
+            return sourceLineLocation >= sourceLineRange.location &&
+                sourceLineLocation < NSMaxRange(sourceLineRange)
+        }
+    }
+
+    func characterLocation(forSourcePosition selection: PendingMergedSelection,
+                           in range: MergedBlockTextRange,
+                           text: NSString) -> Int? {
+        guard let sourceLineLocation = selection.sourceLineLocation,
+              let sourceColumn = selection.sourceColumn,
+              let sourceLineRange = range.sourceLineRange,
+              sourceLineLocation >= sourceLineRange.location,
+              sourceLineLocation < NSMaxRange(sourceLineRange),
+              NSMaxRange(range.characterRange) <= text.length else {
+            return nil
+        }
+
+        let targetRow = sourceLineLocation - sourceLineRange.location
+        let rangeEnd = NSMaxRange(range.characterRange)
+        var lineStart = range.characterRange.location
+        if targetRow > 0 {
+            for _ in 0..<targetRow {
+                guard lineStart < rangeEnd else { return rangeEnd }
+                let searchRange = NSRange(location: lineStart, length: rangeEnd - lineStart)
+                let newline = text.range(of: "\n", options: [], range: searchRange)
+                guard newline.location != NSNotFound else { return rangeEnd }
+                lineStart = NSMaxRange(newline)
+            }
+        }
+
+        let lineEnd: Int
+        if lineStart < rangeEnd {
+            let searchRange = NSRange(location: lineStart, length: rangeEnd - lineStart)
+            let newline = text.range(of: "\n", options: [], range: searchRange)
+            lineEnd = newline.location == NSNotFound ? rangeEnd : newline.location
+        } else {
+            lineEnd = rangeEnd
+        }
+        return min(lineStart + max(sourceColumn, 0), lineEnd)
     }
 
     func mergedRange(_ range: MergedBlockTextRange, matches selection: PendingMergedSelection) -> Bool {
