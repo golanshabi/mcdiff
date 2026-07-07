@@ -33,6 +33,9 @@ extension MainWindowController {
             case let .gitWorktreeFile(_, relativePath):
                 saveButton.title = "Save and Stage"
                 saveButton.isEnabled = canSaveDocument && !gitResolvedPaths.contains(relativePath)
+            case .gitDiffPreview:
+                saveButton.title = "Diff Only"
+                saveButton.isEnabled = false
             case .mergeToolOutput:
                 saveButton.title = "Save Merge"
                 saveButton.isEnabled = canSaveDocument

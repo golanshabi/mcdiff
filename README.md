@@ -30,7 +30,8 @@ The command name is controlled by the launcher script's `COMMAND_NAME`
 variable, so it can be renamed without digging through the script body.
 
 Run `mcdiff` with no file arguments from inside a git repository to open the
-current conflicted files:
+current changed files. Ordinary changes are shown as read-only `HEAD` to
+worktree diffs, and conflicted files keep the resolve-and-stage workflow:
 
 ```bash
 mcdiff

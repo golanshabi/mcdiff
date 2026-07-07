@@ -318,10 +318,11 @@ func testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave() throws {
                "top context expansion updates in place")
 
     let expandedLines = textLines(in: controller.view, identifier: "mergedSide")
-    assertTrue(expandedLines.contains("before 120"),
-               "top expansion reveals 20 more context lines from the hidden middle")
-    assertTrue(!expandedLines.contains("before 121"),
-               "top expansion does not reveal more than 20 hidden lines")
+    let expandedPrefixLimit = controller.gitContextLineCount + controller.gitContextExpansionLineCount
+    assertTrue(expandedLines.contains("before \(expandedPrefixLimit)"),
+               "top expansion reveals the configured number of context lines from the hidden middle")
+    assertTrue(!expandedLines.contains("before \(expandedPrefixLimit + 1)"),
+               "top expansion does not reveal more than the configured number of hidden lines")
     assertTrue(expandedLines.contains("⋯"),
                "partially expanded context keeps the remaining hidden row obvious")
 
@@ -334,10 +335,11 @@ func testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave() throws {
     assertTrue(textViews(in: controller.view, identifier: "mergedSide").first === beforeExpansion,
                "bottom context expansion updates in place")
     let bottomExpandedLines = textLines(in: controller.view, identifier: "mergedSide")
-    assertTrue(bottomExpandedLines.contains("before 231"),
-               "bottom expansion reveals 20 more context lines from the lower hidden side")
-    assertTrue(!bottomExpandedLines.contains("before 230"),
-               "bottom expansion does not reveal more than 20 hidden lines")
+    let expandedSuffixStart = beforeLines.count - expandedPrefixLimit + 1
+    assertTrue(bottomExpandedLines.contains("before \(expandedSuffixStart)"),
+               "bottom expansion reveals the configured number of context lines from the lower hidden side")
+    assertTrue(!bottomExpandedLines.contains("before \(expandedSuffixStart - 1)"),
+               "bottom expansion does not reveal more than the configured number of hidden lines")
 
     clickLineNumberControl(in: controller.view,
                            identifier: "leftSideLineNumbers",
@@ -453,4 +455,40 @@ func testMainWindowGitModeSavesAndStagesSelectedConflict() throws {
                "git mode stages resolved file")
     assertTrue(buttons(in: controller.view).first { $0.title == "Save and Stage" }?.isEnabled == false,
                "resolved git file cannot be saved again immediately")
+}
+
+func testMainWindowGitModeShowsOrdinaryModifiedDiff() throws {
+    let repo = try temporaryDirectory("git-ui-modified-diff")
+    try runGit(["init"], in: repo)
+    try runGit(["config", "user.email", "mcdiff-tests@example.com"], in: repo)
+    try runGit(["config", "user.name", "MacDiff Tests"], in: repo)
+
+    let file = repo.appendingPathComponent("changed.txt")
+    try "before\nsame\n".write(to: file, atomically: true, encoding: .utf8)
+    try runGit(["add", "changed.txt"], in: repo)
+    try runGit(["commit", "-m", "base"], in: repo)
+    try "after\nsame\n".write(to: file, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.loadGit(startPath: repo)
+    layout(testWindow, controller)
+
+    assertTrue(popUpButtons(in: controller.view).contains {
+        $0.identifier?.rawValue == "gitConflictFilePopup" &&
+            !$0.isHidden &&
+            $0.itemTitles.contains("[modified] changed.txt")
+    }, "git mode lists ordinary modified file")
+    assertTrue(buttons(in: controller.view).first { $0.title == "Diff Only" }?.isEnabled == false,
+               "ordinary git diff is read-only")
+    assertTrue(text(in: controller.view, identifier: "leftSide").contains("before"),
+               "git diff renders HEAD side")
+    assertTrue(text(in: controller.view, identifier: "rightSide").contains("after"),
+               "git diff renders worktree side")
+    assertTrue(pickButtons(in: controller.view).isEmpty,
+               "ordinary git diff does not render merge pick buttons")
+    assertTrue(textViews(in: controller.view, identifier: "mergedSide").first?.isEditable == false,
+               "ordinary git diff keeps merged pane read-only")
 }

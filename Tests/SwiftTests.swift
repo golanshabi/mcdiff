@@ -45,6 +45,7 @@ private enum SwiftTests {
             try testMainWindowGitMergeToolSaveWritesMergedPath()
             try testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave()
             try testMainWindowGitModeSavesAndStagesSelectedConflict()
+            try testMainWindowGitModeShowsOrdinaryModifiedDiff()
         } catch {
             fputs("Swift test failed: \(error.localizedDescription)\n", stderr)
             exit(1)

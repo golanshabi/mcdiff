@@ -21,8 +21,11 @@ typedef NS_ENUM(NSInteger, MDPickSide) { MDPickSideUnpicked, MDPickSideLeft, MDP
 
 @interface MDGitConflictFile : NSObject
 @property (copy) NSString *relativePath;
+@property (copy) NSString *headRelativePath;
 @property BOOL isTextConflict;
+@property BOOL isConflict;
 @property (copy) NSString *message;
+@property (copy) NSString *statusDescription;
 @end
 
 #ifdef __cplusplus
@@ -33,6 +36,8 @@ MDDocument *MDMakeDiff(NSString *leftText, NSString *rightText, NSError **error)
 MDDocument *MDMakeConflictDocument(NSString *worktreeText, NSError **error);
 NSString *MDGitDiscoverRepository(NSString *startPath, NSError **error);
 NSArray<MDGitConflictFile *> *MDGitConflictFiles(NSString *repositoryRoot, NSError **error);
+NSArray<MDGitConflictFile *> *MDGitChangedFiles(NSString *repositoryRoot, NSError **error);
+NSString *MDGitHeadFileText(NSString *repositoryRoot, NSString *relativePath, NSError **error);
 BOOL MDGitStageFile(NSString *repositoryRoot, NSString *relativePath, NSError **error);
 #ifdef __cplusplus
 }

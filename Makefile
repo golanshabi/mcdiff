@@ -52,8 +52,9 @@ $(BIN): FORCE App/*.swift Bridge/* Core/* | $(OBJ_DIR)/.dir
 	$(CXX) $(CXXFLAGS) -c Core/DiffEngine.cpp -o $(OBJ_DIR)/DiffEngine.o
 	$(CXX) $(CXXFLAGS) -c Core/ConflictParser.cpp -o $(OBJ_DIR)/ConflictParser.o
 	$(CXX) $(CXXFLAGS) -c Core/MergeBuilder.cpp -o $(OBJ_DIR)/MergeBuilder.o
+	$(CXX) $(CXXFLAGS) -c Core/GitRepository.cpp -o $(OBJ_DIR)/GitRepository.o
 	$(CXX) $(CXXFLAGS) -c Bridge/DiffBridge.mm -o $(OBJ_DIR)/DiffBridge.o
-	swiftc $(SWIFTFLAGS) App/*.swift $(OBJ_DIR)/Logger.o $(OBJ_DIR)/DiffEngine.o $(OBJ_DIR)/ConflictParser.o $(OBJ_DIR)/MergeBuilder.o $(OBJ_DIR)/DiffBridge.o -module-cache-path build/ModuleCache -import-objc-header Bridge/DiffBridge.h -framework AppKit $(SWIFT_LDFLAGS) -lgit2 -lc++ -o $(BIN)
+	swiftc $(SWIFTFLAGS) App/*.swift $(OBJ_DIR)/Logger.o $(OBJ_DIR)/DiffEngine.o $(OBJ_DIR)/ConflictParser.o $(OBJ_DIR)/MergeBuilder.o $(OBJ_DIR)/GitRepository.o $(OBJ_DIR)/DiffBridge.o -module-cache-path build/ModuleCache -import-objc-header Bridge/DiffBridge.h -framework AppKit $(SWIFT_LDFLAGS) -lgit2 -lc++ -o $(BIN)
 
 build: $(BIN)
 
@@ -71,6 +72,7 @@ $(SWIFT_TEST_BIN): $(SWIFT_TEST_FILES) $(SWIFT_TEST_APP_FILES) Bridge/* Core/* |
 	$(CXX) $(CXXFLAGS) -c Core/DiffEngine.cpp -o $(OBJ_DIR)/SwiftTestDiffEngine.o
 	$(CXX) $(CXXFLAGS) -c Core/ConflictParser.cpp -o $(OBJ_DIR)/SwiftTestConflictParser.o
 	$(CXX) $(CXXFLAGS) -c Core/MergeBuilder.cpp -o $(OBJ_DIR)/SwiftTestMergeBuilder.o
+	$(CXX) $(CXXFLAGS) -c Core/GitRepository.cpp -o $(OBJ_DIR)/SwiftTestGitRepository.o
 	$(CXX) $(CXXFLAGS) -c Bridge/DiffBridge.mm -o $(OBJ_DIR)/SwiftTestDiffBridge.o
 	swiftc $(SWIFTFLAGS) $(SWIFT_TEST_FILES) $(SWIFT_TEST_APP_FILES) $(OBJ_DIR)/SwiftTest*.o -module-cache-path build/ModuleCache -import-objc-header Bridge/DiffBridge.h -framework AppKit $(SWIFT_LDFLAGS) -lgit2 -lc++ -o $(SWIFT_TEST_BIN)
 

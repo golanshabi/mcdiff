@@ -23,13 +23,13 @@ extension MainWindowController {
             return
         }
 
-        let (discoveredFiles, listPhase) = timed("listConflicts") {
-            MDGitConflictFiles(rootPath, &error)
+        let (discoveredFiles, listPhase) = timed("listChanges") {
+            MDGitChangedFiles(rootPath, &error)
         }
         phases.append(listPhase)
         guard let files = discoveredFiles else {
             logPerformance("loadGit", phases: phases, metadata: "failed=list", minimumTotalMilliseconds: 0)
-            show(error?.localizedDescription ?? "Could not read git conflicts.")
+            show(error?.localizedDescription ?? "Could not read git changes.")
             updateButtons()
             return
         }
@@ -39,7 +39,7 @@ extension MainWindowController {
         gitConflictFiles = files
         if gitConflictFiles.isEmpty {
             document = nil
-            gitStatusLabel.stringValue = "No conflicted files found."
+            gitStatusLabel.stringValue = "No git changes found."
             render(preservingVerticalPosition: false)
             updateButtons()
             return
@@ -86,6 +86,28 @@ extension MainWindowController {
         var phases = [TimedPhase]()
         phases.append(timed("updateGitControls") { updateGitControls() }.1)
 
+        guard file.isConflict else {
+            saveTarget = .gitDiffPreview
+            let status = file.statusDescription ?? "changed"
+            gitStatusLabel.stringValue = "Diffing \(relativePath) (\(status), HEAD -> worktree)"
+            do {
+                phases.append(contentsOf: try loadGitDiffDocument(file: file, repositoryRoot: gitRepositoryRoot))
+                phases.append(timed("render") { resetEditorStateAfterDocumentLoad() }.1)
+                logPerformance("loadGitDiffFile",
+                               phases: phases,
+                               metadata: "path=\(relativePath) status=\(status)",
+                               minimumTotalMilliseconds: 0)
+            } catch {
+                AppLogger.error("Git diff load failed: \(error.localizedDescription)")
+                document = nil
+                gitStatusLabel.stringValue = "Could not diff \(relativePath)"
+                render(preservingVerticalPosition: false)
+                show(error.localizedDescription)
+            }
+            updateButtons()
+            return
+        }
+
         guard file.isTextConflict else {
             document = nil
             saveTarget = .savePanel
@@ -116,6 +138,56 @@ extension MainWindowController {
             show(error.localizedDescription)
         }
         updateButtons()
+    }
+
+    func loadGitDiffDocument(file: MDGitConflictFile, repositoryRoot: URL) throws -> [TimedPhase] {
+        var phases = [TimedPhase]()
+        let relativePath = file.relativePath ?? ""
+        let headRelativePath = file.headRelativePath ?? relativePath
+
+        var headError: NSError?
+        let (headText, headPhase) = timed("readHead") {
+            MDGitHeadFileText(repositoryRoot.path, headRelativePath, &headError)
+        }
+        phases.append(headPhase)
+        guard let leftText = headText else {
+            throw headError ?? NSError(domain: "mcdiff", code: 7, userInfo: [
+                NSLocalizedDescriptionKey: "Could not read \(headRelativePath) from HEAD."
+            ])
+        }
+
+        let worktreeURL = repositoryRoot.appendingPathComponent(relativePath)
+        let (rightText, readPhase) = try timed("readWorktree") {
+            try gitWorktreeText(from: worktreeURL)
+        }
+        phases.append(readPhase)
+
+        var diffError: NSError?
+        let (parsedDocument, diffPhase) = timed("diff") {
+            MDMakeDiff(leftText, rightText, &diffError)
+        }
+        phases.append(diffPhase)
+        guard let parsed = parsedDocument else {
+            throw diffError ?? NSError(domain: "mcdiff", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Could not build git diff for \(relativePath)."
+            ])
+        }
+        document = parsed
+        return phases
+    }
+
+    func gitWorktreeText(from url: URL) throws -> String {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return ""
+        }
+
+        do {
+            return try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            throw NSError(domain: "mcdiff", code: 7, userInfo: [
+                NSLocalizedDescriptionKey: "Could not read \(url.path) as UTF-8 text. Binary files are not supported yet."
+            ])
+        }
     }
 
     func loadConflictDocument(from url: URL) throws -> [TimedPhase] {
@@ -185,8 +257,14 @@ extension MainWindowController {
         if gitResolvedPaths.contains(relativePath) {
             return "[saved] \(relativePath)"
         }
-        if !file.isTextConflict {
+        if file.isConflict && !file.isTextConflict {
             return "[unsupported] \(relativePath)"
+        }
+        if file.isConflict {
+            return "[conflict] \(relativePath)"
+        }
+        if let status = file.statusDescription, !status.isEmpty {
+            return "[\(status)] \(relativePath)"
         }
         return relativePath
     }
@@ -197,7 +275,7 @@ extension MainWindowController {
         for offset in 0..<gitConflictFiles.count {
             let index = (start + offset) % gitConflictFiles.count
             let file = gitConflictFiles[index]
-            if file.isTextConflict && !gitResolvedPaths.contains(file.relativePath ?? "") {
+            if file.isConflict && file.isTextConflict && !gitResolvedPaths.contains(file.relativePath ?? "") {
                 return index
             }
         }

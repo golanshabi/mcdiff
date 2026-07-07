@@ -156,3 +156,43 @@ func testGitBridgeListsAndStagesConflict() throws {
     assertTrue(unmerged.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                "staging resolved file clears unmerged index entries")
 }
+
+func testGitBridgeListsChangedFilesAndReadsHeadText() throws {
+    let repo = try temporaryDirectory("git-bridge-changes")
+    try runGit(["init"], in: repo)
+    try runGit(["config", "user.email", "mcdiff-tests@example.com"], in: repo)
+    try runGit(["config", "user.name", "MacDiff Tests"], in: repo)
+
+    try "old\n".write(to: repo.appendingPathComponent("modified.txt"), atomically: true, encoding: .utf8)
+    try "gone\n".write(to: repo.appendingPathComponent("deleted.txt"), atomically: true, encoding: .utf8)
+    try runGit(["add", "modified.txt", "deleted.txt"], in: repo)
+    try runGit(["commit", "-m", "base"], in: repo)
+
+    try "new\n".write(to: repo.appendingPathComponent("modified.txt"), atomically: true, encoding: .utf8)
+    try FileManager.default.removeItem(at: repo.appendingPathComponent("deleted.txt"))
+    try "added\n".write(to: repo.appendingPathComponent("added.txt"), atomically: true, encoding: .utf8)
+    try runGit(["add", "added.txt"], in: repo)
+    try "loose\n".write(to: repo.appendingPathComponent("untracked.txt"), atomically: true, encoding: .utf8)
+
+    var error: NSError?
+    guard let changedFiles = MDGitChangedFiles(repo.path, &error) else {
+        assertTrue(false, "git changed files are listed")
+        return
+    }
+    let paths = Set(changedFiles.map { $0.relativePath ?? "" })
+    assertTrue(paths.contains("modified.txt"), "git changed files include modified path")
+    assertTrue(paths.contains("deleted.txt"), "git changed files include deleted path")
+    assertTrue(paths.contains("added.txt"), "git changed files include staged added path")
+    assertTrue(paths.contains("untracked.txt"), "git changed files include untracked path")
+    assertTrue(changedFiles.first { ($0.relativePath ?? "") == "modified.txt" }?.isConflict == false,
+               "ordinary git change is not marked as conflict")
+
+    var headError: NSError?
+    let modifiedHead = MDGitHeadFileText(repo.path, "modified.txt", &headError)
+    assertTrue(modifiedHead == "old\n", "HEAD text reads the before side")
+    let addedHead = MDGitHeadFileText(repo.path, "added.txt", &headError)
+    assertTrue(addedHead == "", "new files diff against an empty before side")
+    let deletedHead = MDGitHeadFileText(repo.path, "deleted.txt", &headError)
+    assertTrue(deletedHead == "gone\n", "deleted files keep the HEAD before side")
+    assertTrue(headError == nil, "reading HEAD text has no error")
+}

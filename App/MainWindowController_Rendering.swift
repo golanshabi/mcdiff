@@ -84,7 +84,7 @@ extension MainWindowController {
         view.identifier = NSUserInterfaceItemIdentifier("pickButtonSlot")
         view.heightAnchor.constraint(equalToConstant: CGFloat(rowCount) * lineHeight).isActive = true
 
-        if block.kind == .changed {
+        if block.kind == .changed && !isGitDiffPreview {
             let button = PickButton(title: picksLeft ? "→" : "←", target: self, action: #selector(pick(_:)))
             button.block = block
             button.picksLeft = picksLeft
@@ -164,8 +164,8 @@ extension MainWindowController {
                                     pane: pane,
                                     font: paneTextFont,
                                     lineHeight: lineHeight,
-                                    isEditable: pane == .merged,
-                                    textDelegate: pane == .merged ? self : nil,
+                                    isEditable: pane == .merged && !isGitDiffPreview,
+                                    textDelegate: pane == .merged && !isGitDiffPreview ? self : nil,
                                     undoHandler: { [weak self] in self?.performUndo() },
                                     redoHandler: { [weak self] in self?.performRedo() })
         clip.delegate = self

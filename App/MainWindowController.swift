@@ -86,6 +86,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     enum SaveTarget {
         case savePanel
         case gitWorktreeFile(repositoryRoot: URL, relativePath: String)
+        case gitDiffPreview
         case mergeToolOutput(URL)
     }
 
@@ -97,8 +98,8 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     let paneContentSpacing: CGFloat = 8
     let horizontalScrollerHeight: CGFloat = 22
     let horizontalWheelSensitivity: CGFloat = 3
-    let gitContextLineCount = 100
-    let gitContextExpansionLineCount = 20
+    let gitContextLineCount = 20
+    let gitContextExpansionLineCount = 5
 
     let leftButton = NSButton(title: "Choose Left File", target: nil, action: nil)
     let rightButton = NSButton(title: "Choose Right File", target: nil, action: nil)
@@ -146,9 +147,16 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         switch saveTarget {
             case .gitWorktreeFile, .mergeToolOutput:
                 return true
-            case .savePanel:
+            case .savePanel, .gitDiffPreview:
                 return false
         }
+    }
+
+    var isGitDiffPreview: Bool {
+        if case .gitDiffPreview = saveTarget {
+            return true
+        }
+        return false
     }
 
     override func loadView() {
@@ -309,6 +317,8 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
                                    phases: phases,
                                    metadata: "path=\(relativePath) bytes=\(text.utf8.count)",
                                    minimumTotalMilliseconds: 0)
+                case .gitDiffPreview:
+                    break
                 case let .mergeToolOutput(url):
                     phases.append(try timed("writeFile") {
                         try text.write(to: url, atomically: true, encoding: String.Encoding.utf8)
