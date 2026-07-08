@@ -48,6 +48,56 @@ func testMainWindowIdenticalFilesEnableSaveWithoutPick() throws {
     assertTrue(save?.isEnabled == true, "identical files can save immediately")
 }
 
+func testMainWindowAppliesSyntaxColorsByFileType() throws {
+    let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    let lineHeight = ceil(font.ascender - font.descender + font.leading)
+    let markdown = SyntaxHighlighter.attributedString(for: "# Title\n[link](target)\n",
+                                                      fileName: "README.md",
+                                                      font: font,
+                                                      lineHeight: lineHeight)
+    let cpp = SyntaxHighlighter.attributedString(for: "#include <vector>\nint main() { return 0; } // comment\n",
+                                                 fileName: "main.cpp",
+                                                 font: font,
+                                                 lineHeight: lineHeight)
+    let python = SyntaxHighlighter.attributedString(for: "def run():\n    return \"ok\"\n",
+                                                    fileName: "tool.py",
+                                                    font: font,
+                                                    lineHeight: lineHeight)
+
+    assertTrue(color(foregroundColor(in: markdown, matching: "# Title"), matches: .systemBlue),
+               "markdown heading is syntax-colored")
+    assertTrue(color(foregroundColor(in: cpp, matching: "#include"), matches: .systemBlue),
+               "cpp preprocessor line is syntax-colored")
+    assertTrue(color(foregroundColor(in: cpp, matching: "// comment"), matches: .systemGreen),
+               "cpp comment is syntax-colored")
+    assertTrue(color(foregroundColor(in: python, matching: "def"), matches: .systemPurple),
+               "python keyword is syntax-colored")
+    assertTrue(color(foregroundColor(in: python, matching: "\"ok\""), matches: .systemRed),
+               "python string is syntax-colored")
+
+    let files = try temporaryDirectory("syntax-colors")
+    let left = files.appendingPathComponent("left.py")
+    let right = files.appendingPathComponent("right.py")
+    try "def run():\n    return \"left\"\n".write(to: left, atomically: true, encoding: .utf8)
+    try "def run():\n    return \"right\"\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let leftPane = textViews(in: controller.view, identifier: "leftSide").first else {
+        assertTrue(false, "left syntax pane exists")
+        return
+    }
+    assertTrue(color(foregroundColor(in: leftPane, matching: "def"), matches: .systemPurple),
+               "loaded python pane uses python keyword color")
+    assertTrue(color(foregroundColor(in: leftPane, matching: "\"left\""), matches: .systemRed),
+               "loaded python pane uses python string color")
+}
+
 func testMainWindowLoadsAndPicksDiff() throws {
     let files = try temporaryDirectory("files")
     let left = files.appendingPathComponent("left.txt")

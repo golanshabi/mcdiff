@@ -386,9 +386,33 @@ func layout(_ window: NSWindow, _ controller: MainWindowController) {
     controller.view.layoutSubtreeIfNeeded()
 }
 
+func runMainLoopBriefly(_ seconds: TimeInterval = 0.02) {
+    RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+}
+
 func colorComponents(_ color: NSColor) -> (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
     let rgb = color.usingColorSpace(.deviceRGB) ?? color
     return (rgb.redComponent, rgb.greenComponent, rgb.blueComponent, rgb.alphaComponent)
+}
+
+func foregroundColor(in attributed: NSAttributedString, matching text: String) -> NSColor? {
+    let range = (attributed.string as NSString).range(of: text)
+    guard range.location != NSNotFound else { return nil }
+    return attributed.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? NSColor
+}
+
+func foregroundColor(in textView: NSTextView, matching text: String) -> NSColor? {
+    guard let attributed = textView.textStorage else { return nil }
+    return foregroundColor(in: attributed, matching: text)
+}
+
+func color(_ color: NSColor?, matches expected: NSColor) -> Bool {
+    guard let color else { return false }
+    let actualComponents = colorComponents(color)
+    let expectedComponents = colorComponents(expected)
+    return abs(actualComponents.red - expectedComponents.red) < 0.03
+        && abs(actualComponents.green - expectedComponents.green) < 0.03
+        && abs(actualComponents.blue - expectedComponents.blue) < 0.03
 }
 
 func backgroundColors(in view: NSView) -> [(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat)] {

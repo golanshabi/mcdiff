@@ -122,6 +122,7 @@ extension MainWindowController {
         leftURL = nil
         rightURL = nil
         saveTarget = .mergeToolOutput(merged)
+        useSingleSyntaxFileName(merged.lastPathComponent)
         gitStatusLabel.stringValue = "Resolving \(merged.lastPathComponent)"
         resetEditorStateAfterDocumentLoad()
 
@@ -153,6 +154,7 @@ extension MainWindowController {
         let file = gitConflictFiles[index]
         let relativePath = file.relativePath ?? ""
         let message = file.message ?? ""
+        useSingleSyntaxFileName(relativePath)
         var phases = [TimedPhase]()
         phases.append(timed("updateGitControls") { updateGitControls() }.1)
 
@@ -299,6 +301,7 @@ extension MainWindowController {
         gitRepositoryRoot = nil
         gitConflictFiles = []
         gitFileBrowserNodes = []
+        clearPaneSyntaxFileNames()
         gitFileSearchField.stringValue = ""
         isReloadingGitFileBrowser = true
         gitFileOutline.reloadData()
@@ -310,6 +313,7 @@ extension MainWindowController {
     }
 
     func resetEditorStateAfterDocumentLoad() {
+        cancelPendingMergedSyntaxRefresh()
         pendingMergedEdit = nil
         pendingMergedSelection = nil
         compactContextExpansions = [:]

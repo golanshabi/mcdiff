@@ -378,6 +378,7 @@ final class PaneTextClipView: NSView {
     let pane: DiffPane
     private let textView: PaneTextView
     private let lineHeight: CGFloat
+    private let syntaxFileName: String?
     private var textSize: NSSize
     private let performanceLogger: PanePerformanceLogger?
     weak var delegate: PaneTextClipViewDelegate?
@@ -404,6 +405,7 @@ final class PaneTextClipView: NSView {
          pane: DiffPane,
          font: NSFont,
          lineHeight: CGFloat,
+         syntaxFileName: String? = nil,
          isEditable: Bool = false,
          textDelegate: NSTextViewDelegate? = nil,
          performanceLogger: PanePerformanceLogger? = nil,
@@ -413,6 +415,7 @@ final class PaneTextClipView: NSView {
         var phaseParts = [String]()
         self.pane = pane
         self.lineHeight = lineHeight
+        self.syntaxFileName = syntaxFileName
         self.performanceLogger = performanceLogger
         let measuredText = text.isEmpty ? " " : text
         var phaseStart = DispatchTime.now().uptimeNanoseconds
@@ -433,23 +436,26 @@ final class PaneTextClipView: NSView {
         textView.clipView = self
         textView.pane = pane
         textView.performanceLogger = performanceLogger
+        textView.font = font
+        textView.textColor = .labelColor
         phaseParts.append("configureClip=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
         phaseStart = DispatchTime.now().uptimeNanoseconds
         let attributedText = PaneTextClipView.attributedString(for: text,
                                                               font: font,
-                                                              lineHeight: lineHeight)
+                                                              lineHeight: lineHeight,
+                                                              syntaxFileName: syntaxFileName)
         phaseParts.append("attributed=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
         phaseStart = DispatchTime.now().uptimeNanoseconds
         textView.textStorage?.setAttributedString(attributedText)
         phaseParts.append("setStorage=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
         phaseStart = DispatchTime.now().uptimeNanoseconds
-        textView.font = font
-        textView.textColor = .labelColor
         textView.drawsBackground = false
         textView.isEditable = isEditable
         textView.isSelectable = true
-        textView.isRichText = false
+        textView.isRichText = true
         textView.importsGraphics = false
+        textView.usesFontPanel = false
+        textView.allowsDocumentBackgroundColorChange = false
         textView.allowsUndo = false
         textView.undoHandler = undoHandler
         textView.redoHandler = redoHandler
@@ -578,7 +584,8 @@ final class PaneTextClipView: NSView {
             replaced = true
             textView.textStorage?.setAttributedString(PaneTextClipView.attributedString(for: text,
                                                                                         font: font,
-                                                                                        lineHeight: lineHeight))
+                                                                                        lineHeight: lineHeight,
+                                                                                        syntaxFileName: syntaxFileName))
         }
         refreshTextLayoutForCurrentText()
         if preserveSelection {
@@ -591,6 +598,43 @@ final class PaneTextClipView: NSView {
             performanceLogger?("replaceText",
                                elapsed,
                                "pane=\(pane.identifier) length=\((text as NSString).length) replaced=\(replaced) preserveSelection=\(preserveSelection)")
+        }
+    }
+
+    func refreshSyntaxHighlighting(preserveSelection: Bool = true) {
+        let start = DispatchTime.now().uptimeNanoseconds
+        let font = textView.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let selection = textView.selectedRange()
+        let text = textView.string
+        let attributedText = PaneTextClipView.attributedString(for: text,
+                                                               font: font,
+                                                               lineHeight: lineHeight,
+                                                               syntaxFileName: syntaxFileName)
+        textView.textStorage?.beginEditing()
+        textView.textStorage?.setAttributedString(attributedText)
+        textView.textStorage?.endEditing()
+        if preserveSelection {
+            let length = (textView.string as NSString).length
+            textView.setSelectedRange(NSRange(location: min(selection.location, length),
+                                              length: min(selection.length, max(length - min(selection.location, length), 0))))
+        }
+        let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
+        if let layoutManager = textView.layoutManager,
+           let textContainer = textView.textContainer {
+            layoutManager.invalidateLayout(forCharacterRange: fullRange, actualCharacterRange: nil)
+            layoutManager.invalidateDisplay(forCharacterRange: fullRange)
+            layoutManager.ensureLayout(for: textContainer)
+        }
+        textView.setNeedsDisplay(textView.bounds)
+        textView.needsDisplay = true
+        needsDisplay = true
+        textView.displayIfNeeded()
+
+        let elapsed = elapsedMilliseconds(since: start)
+        if elapsed >= 8 {
+            performanceLogger?("refreshSyntaxHighlighting",
+                               elapsed,
+                               "pane=\(pane.identifier) length=\((text as NSString).length) preserveSelection=\(preserveSelection)")
         }
     }
 
@@ -651,15 +695,13 @@ final class PaneTextClipView: NSView {
                 maxLineLength)
     }
 
-    private static func attributedString(for text: String, font: NSFont, lineHeight: CGFloat) -> NSAttributedString {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.minimumLineHeight = lineHeight
-        paragraph.maximumLineHeight = lineHeight
-        paragraph.lineBreakMode = .byClipping
-        return NSAttributedString(string: text, attributes: [
-            .font: font,
-            .foregroundColor: NSColor.labelColor,
-            .paragraphStyle: paragraph
-        ])
+    private static func attributedString(for text: String,
+                                         font: NSFont,
+                                         lineHeight: CGFloat,
+                                         syntaxFileName: String?) -> NSAttributedString {
+        SyntaxHighlighter.attributedString(for: text,
+                                           fileName: syntaxFileName,
+                                           font: font,
+                                           lineHeight: lineHeight)
     }
 }

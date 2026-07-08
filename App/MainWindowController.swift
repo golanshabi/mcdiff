@@ -132,6 +132,8 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     var selectedGitConflictIndex: Int?
     var gitResolvedPaths = Set<String>()
     var isReloadingGitFileBrowser = false
+    var paneSyntaxFileNames = [DiffPane: String]()
+    var pendingMergedSyntaxRefresh: DispatchWorkItem?
     var paneScrollers = [DiffPane: PaneHorizontalSlider]()
     var paneScrollerSpacers = [DiffPane: NSView]()
     var visibleRenderPanes = DiffPane.allCases
@@ -291,6 +293,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         guard let leftURL, let rightURL else { return }
         resetGitSession()
         saveTarget = .savePanel
+        useCompareSyntaxFileNames(left: leftURL, right: rightURL)
         AppLogger.info("Starting compare left=\(leftURL.path) right=\(rightURL.path)")
         do {
             var error: NSError?

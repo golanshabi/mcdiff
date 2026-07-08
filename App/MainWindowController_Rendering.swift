@@ -238,6 +238,7 @@ extension MainWindowController {
                              pane: pane,
                              font: paneTextFont,
                              lineHeight: lineHeight,
+                             syntaxFileName: syntaxFileName(for: pane),
                              isEditable: pane == .merged && !isGitDiffPreview,
                              textDelegate: pane == .merged && !isGitDiffPreview ? self : nil,
                              performanceLogger: { [weak self] operation, milliseconds, metadata in

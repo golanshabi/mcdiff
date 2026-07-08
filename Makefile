@@ -28,6 +28,7 @@ SWIFT_TEST_FILES := \
 	Tests/SwiftGitAndScrollingTests.swift
 SWIFT_TEST_APP_FILES := \
 	App/Logger.swift \
+	App/SyntaxHighlighter.swift \
 	App/PaneViews.swift \
 	App/MainWindowController.swift \
 	App/MainWindowController_Rendering.swift \
@@ -37,6 +38,7 @@ SWIFT_TEST_APP_FILES := \
 	App/MainWindowController_UndoRestore.swift \
 	App/MainWindowController_Git.swift \
 	App/MainWindowController_HorizontalScrolling.swift \
+	App/MainWindowController_Syntax.swift \
 	App/MainWindowController_Utilities.swift
 
 $(OBJ_DIR)/.dir:

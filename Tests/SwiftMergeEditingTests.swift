@@ -34,6 +34,54 @@ func testManualMergedEditEnablesSaveAndShowsManualText() throws {
                "manual merged block uses a distinct middle-pane color")
 }
 
+func testMergedSyntaxColorsRefreshAfterIdleEdit() throws {
+    let files = try temporaryDirectory("syntax-refresh-after-edit")
+    let left = files.appendingPathComponent("left.py")
+    let right = files.appendingPathComponent("right.py")
+    try "alpha\nleft side has enough width for manual edits\nomega\n".write(to: left,
+                                                                            atomically: true,
+                                                                            encoding: .utf8)
+    try "alpha\nright side has enough width for manual edits\nomega\n".write(to: right,
+                                                                             atomically: true,
+                                                                             encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let merged = textViews(in: controller.view, identifier: "mergedSide").first,
+          let alphaRange = nsRange(of: "alpha", in: merged.string) else {
+        assertTrue(false, "merged python pane exists before syntax refresh edit")
+        return
+    }
+    assertTrue(merged.isRichText, "merged syntax pane preserves attributed colors while editable")
+    let insertion = NSRange(location: NSMaxRange(alphaRange) + 1, length: 0)
+    replaceText(in: merged,
+                range: insertion,
+                with: "def",
+                "manual python keyword edit is accepted")
+    layout(testWindow, controller)
+
+    guard let edited = textViews(in: controller.view, identifier: "mergedSide").first,
+          let defRange = nsRange(of: "def", in: edited.string) else {
+        assertTrue(false, "manual python keyword remains visible")
+        return
+    }
+    let selectionBeforeRefresh = edited.selectedRange()
+    edited.textStorage?.addAttribute(.foregroundColor, value: NSColor.labelColor, range: defRange)
+
+    controller.scheduleMergedSyntaxRefresh(after: 0)
+    runMainLoopBriefly()
+
+    assertTrue(color(foregroundColor(in: edited, matching: "def"), matches: .systemPurple),
+               "idle syntax refresh restores python keyword color after editing")
+    assertTrue(edited.selectedRange() == selectionBeforeRefresh,
+               "idle syntax refresh preserves the caret")
+}
+
 func testSameLineManualMergedEditDoesNotRerenderTextView() throws {
     let files = try temporaryDirectory("manual-edit-no-rerender")
     let left = files.appendingPathComponent("left.txt")
