@@ -41,10 +41,10 @@ extension MainWindowController {
         let rangeBeforeRefresh = mergedTextRangeAtSelectionLog()
         let oldRangeCount = mergedTextRanges.count
         let oldRowCount = renderedBlockRows.count
-        if updateContentWidths {
-            updatePaneContentWidths()
-        }
         let plan = renderPlan(for: document)
+        if updateContentWidths {
+            updatePaneContentWidths(for: plan)
+        }
         let exactPlanRange = pendingBeforeRefresh.flatMap { pending in
             plan.mergedTextRanges.first(where: { mergedRange($0, matches: pending) })
         }

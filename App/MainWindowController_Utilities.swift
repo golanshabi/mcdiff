@@ -20,7 +20,8 @@ extension MainWindowController {
         leftButton.isHidden = isGitRepositoryMode || isMergeToolMode
         rightButton.isHidden = isGitRepositoryMode || isMergeToolMode
         compareButton.isHidden = isGitRepositoryMode || isMergeToolMode
-        gitFilePopup.isHidden = !isGitRepositoryMode
+        gitFilePopup.isHidden = true
+        gitFileBrowserPanel.isHidden = !isGitRepositoryMode
         gitStatusLabel.isHidden = !isGitRepositoryMode && !isMergeToolMode
 
         compareButton.isEnabled = !isGitRepositoryMode && !isMergeToolMode && leftURL != nil && rightURL != nil
@@ -68,6 +69,29 @@ extension MainWindowController {
             .joined(separator: " ")
         let metadataText = metadata.isEmpty ? "" : " \(metadata)"
         AppLogger.info("PERF \(operation) total=\(String(format: "%.1f", total))ms\(metadataText) \(phaseText)")
+    }
+
+    func logInputPerformance(_ operation: String,
+                             milliseconds: Double,
+                             metadata: String = "") {
+        let rowCount = renderedBlockRows.values.reduce(0) { $0 + $1.rowCount }
+        let documentBlockCount = document?.blocks.count ?? 0
+        let gitMode = gitRepositoryRoot != nil
+        let previewMode = isGitDiffPreview
+        let metadataText = metadata.isEmpty ? "" : " \(metadata)"
+        AppLogger.info("PERF input.\(operation) elapsed_ms=\(String(format: "%.1f", milliseconds)) blocks=\(documentBlockCount) rows=\(rowCount) gitMode=\(gitMode) previewMode=\(previewMode)\(metadataText)")
+    }
+
+    func logRenderTrace(_ operation: String,
+                        milliseconds: Double,
+                        metadata: String = "",
+                        minimumMilliseconds: Double = 0) {
+        guard milliseconds >= minimumMilliseconds else { return }
+
+        let rowCount = renderedBlockRows.values.reduce(0) { $0 + $1.rowCount }
+        let documentBlockCount = document?.blocks.count ?? 0
+        let metadataText = metadata.isEmpty ? "" : " \(metadata)"
+        AppLogger.info("PERF renderTrace.\(operation) elapsed_ms=\(String(format: "%.1f", milliseconds)) blocks=\(documentBlockCount) rows=\(rowCount) gitMode=\(gitRepositoryRoot != nil) previewMode=\(isGitDiffPreview)\(metadataText)")
     }
 
     func format(_ value: CGFloat) -> String {

@@ -1,5 +1,14 @@
 import AppKit
 
+private struct PaneContentWidthMeasurement {
+    let width: CGFloat
+    let lineCount: Int
+    let characterCount: Int
+    let maxLineLength: Int
+    let collectMilliseconds: Double
+    let measureMilliseconds: Double
+}
+
 extension MainWindowController {
     @objc func scrollPaneHorizontally(_ sender: PaneHorizontalSlider) {
         applySharedHorizontalValue(sender.doubleValue)
@@ -36,7 +45,9 @@ extension MainWindowController {
             paneScrollerStack.addArrangedSubview(scroller)
             equalWidthScrollers.append(scroller)
             if pane != .right {
-                paneScrollerStack.addArrangedSubview(horizontalScrollerSpacer(width: pickButtonSlotWidth))
+                let spacer = horizontalScrollerSpacer(width: pickButtonSlotWidth)
+                paneScrollerSpacers[pane] = spacer
+                paneScrollerStack.addArrangedSubview(spacer)
             }
         }
         if let firstScroller = equalWidthScrollers.first {
@@ -53,6 +64,19 @@ extension MainWindowController {
         return view
     }
 
+    func setVisibleHorizontalPanes(_ panes: [DiffPane]) {
+        let visiblePanes = Set(panes)
+        visibleRenderPanes = panes
+        for pane in DiffPane.allCases {
+            paneScrollers[pane]?.isHidden = !visiblePanes.contains(pane)
+        }
+
+        let showsPickColumnSpacers = panes == DiffPane.allCases
+        for spacer in paneScrollerSpacers.values {
+            spacer.isHidden = !showsPickColumnSpacers
+        }
+    }
+
     func resetHorizontalOffsets() {
         sharedHorizontalValue = 0
         for state in paneStates.values {
@@ -61,65 +85,62 @@ extension MainWindowController {
         updateHorizontalScrollers()
     }
 
-    func updatePaneContentWidths() {
-        let sharedContentWidth = DiffPane.allCases
-            .map(measuredContentWidth(for:))
-            .max() ?? 0
-        for pane in DiffPane.allCases {
-            guard let state = paneStates[pane] else { continue }
-            state.contentWidth = sharedContentWidth
+    func updatePaneContentWidths(for plan: RenderPlan) {
+        setVisibleHorizontalPanes(plan.visiblePanes)
+        var phases = [TimedPhase]()
+        var measurements = [DiffPane: PaneContentWidthMeasurement]()
+        for pane in plan.visiblePanes {
+            let (measurement, phase) = timed("measure\(pane.identifier)") {
+                measuredContentWidthDetails(for: plan.panes[pane] ?? PaneRenderContent())
+            }
+            phases.append(phase)
+            measurements[pane] = measurement
         }
-        applySharedHorizontalValue(sharedHorizontalValue)
+        let sharedContentWidth = measurements.values.map(\.width).max() ?? 0
+        phases.append(timed("assignWidths") {
+            for pane in DiffPane.allCases {
+                guard let state = paneStates[pane] else { continue }
+                state.contentWidth = plan.visiblePanes.contains(pane) ? sharedContentWidth : 0
+            }
+        }.1)
+        phases.append(timed("applyOffset") {
+            applySharedHorizontalValue(sharedHorizontalValue)
+        }.1)
+
+        let total = phases.reduce(0) { $0 + $1.milliseconds }
+        if total >= 16 {
+            let detailText = plan.visiblePanes.compactMap { pane -> String? in
+                guard let measurement = measurements[pane] else { return nil }
+                return "\(pane.identifier)Lines=\(measurement.lineCount) \(pane.identifier)Chars=\(measurement.characterCount) \(pane.identifier)MaxLine=\(measurement.maxLineLength) \(pane.identifier)Collect=\(String(format: "%.1f", measurement.collectMilliseconds))ms \(pane.identifier)Measure=\(String(format: "%.1f", measurement.measureMilliseconds))ms \(pane.identifier)Width=\(format(measurement.width))"
+            }.joined(separator: " ")
+            logPerformance("contentWidths",
+                           phases: phases,
+                           metadata: "sharedWidth=\(format(sharedContentWidth)) \(detailText)",
+                           minimumTotalMilliseconds: 16)
+        }
     }
 
-    func measuredContentWidth(for pane: DiffPane) -> CGFloat {
-        guard let document else { return 0 }
+    private func measuredContentWidthDetails(for content: PaneRenderContent) -> PaneContentWidthMeasurement {
         var maxWidth: CGFloat = 1
-        for (blockIndex, block) in document.blocks.enumerated() {
-            for line in widthCandidateLines(for: block, blockIndex: blockIndex, pane: pane) {
-                maxWidth = max(maxWidth, measuredLineWidth(line))
-            }
+        var lineCount = 0
+        var characterCount = 0
+        var maxLineLength = 0
+        var measureNanoseconds: UInt64 = 0
+        let measureStart = DispatchTime.now().uptimeNanoseconds
+        for line in content.textLines {
+            let lineLength = (line as NSString).length
+            lineCount += 1
+            characterCount += lineLength
+            maxLineLength = max(maxLineLength, lineLength)
+            maxWidth = max(maxWidth, measuredLineWidth(line))
         }
-        return maxWidth
-    }
-
-    func widthCandidateLines(for block: MDBlock, blockIndex: Int, pane: DiffPane) -> [String] {
-        if rendersConflictContextOnly, block.kind == .equal {
-            let lines: [String]
-            switch pane {
-                case .left:
-                    lines = block.leftLines ?? []
-                case .right:
-                    lines = block.rightLines ?? []
-                case .merged:
-                    if block.pick == .manual {
-                        lines = block.manualLines ?? []
-                    } else {
-                        lines = block.leftLines ?? []
-                    }
-            }
-            return compactedContextLines(lines, start: nil, blockIndex: blockIndex).lines
-        }
-
-        switch pane {
-            case .left:
-                return block.leftLines ?? []
-            case .right:
-                return block.rightLines ?? []
-            case .merged:
-                if block.kind == .equal {
-                    if block.pick == .manual {
-                        return block.manualLines ?? []
-                    }
-                    return block.leftLines ?? []
-                }
-
-                var lines = [String]()
-                lines.append(contentsOf: block.leftLines ?? [])
-                lines.append(contentsOf: block.rightLines ?? [])
-                lines.append(contentsOf: block.manualLines ?? [])
-                return lines
-        }
+        measureNanoseconds += DispatchTime.now().uptimeNanoseconds - measureStart
+        return PaneContentWidthMeasurement(width: maxWidth,
+                                           lineCount: lineCount,
+                                           characterCount: characterCount,
+                                           maxLineLength: maxLineLength,
+                                           collectMilliseconds: 0,
+                                           measureMilliseconds: Double(measureNanoseconds) / 1_000_000.0)
     }
 
     func measuredLineWidth(_ line: String) -> CGFloat {
@@ -129,26 +150,42 @@ extension MainWindowController {
     }
 
     func sharedMaxContentWidth() -> CGFloat {
-        paneStates.values.map(\.contentWidth).max() ?? 0
+        visibleRenderPanes.compactMap { paneStates[$0]?.contentWidth }.max() ?? 0
     }
 
     func refreshPaneViewportWidths() {
-        for pane in DiffPane.allCases {
+        let start = DispatchTime.now().uptimeNanoseconds
+        for pane in visibleRenderPanes {
             guard let state = paneStates[pane] else { continue }
             state.viewportWidth = paneTextClipViews[pane]?.map(\.bounds.width).max() ?? 0
         }
         applySharedHorizontalValue(sharedHorizontalValue)
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000.0
+        if elapsed >= 8 {
+            let clipCount = paneTextClipViews.values.reduce(0) { $0 + $1.count }
+            logInputPerformance("refreshPaneViewportWidths",
+                                milliseconds: elapsed,
+                                metadata: "clips=\(clipCount) maxOffset=\(format(sharedMaxOffset()))")
+        }
     }
 
     func applySharedHorizontalValue(_ value: Double) {
+        let start = DispatchTime.now().uptimeNanoseconds
         sharedHorizontalValue = min(max(value, 0), 1)
-        for pane in DiffPane.allCases {
+        for pane in visibleRenderPanes {
             guard let state = paneStates[pane] else { continue }
             state.offset = CGFloat(sharedHorizontalValue) * state.maxOffset
             state.clampOffset()
             applyHorizontalOffset(for: pane)
         }
         updateHorizontalScrollers()
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000.0
+        if elapsed >= 8 {
+            let clipCount = paneTextClipViews.values.reduce(0) { $0 + $1.count }
+            logInputPerformance("applySharedHorizontalValue",
+                                milliseconds: elapsed,
+                                metadata: "value=\(String(format: "%.3f", sharedHorizontalValue)) clips=\(clipCount) maxOffset=\(format(sharedMaxOffset()))")
+        }
     }
 
     func applyHorizontalOffset(for pane: DiffPane) {
@@ -166,11 +203,16 @@ extension MainWindowController {
 
     func updateHorizontalScroller(for pane: DiffPane) {
         guard let scroller = paneScrollers[pane] else { return }
+        guard visibleRenderPanes.contains(pane) else {
+            scroller.isEnabled = false
+            scroller.doubleValue = 0
+            return
+        }
         scroller.isEnabled = sharedMaxOffset() > 0.5
         scroller.doubleValue = sharedHorizontalValue
     }
 
     func sharedMaxOffset() -> CGFloat {
-        paneStates.values.map(\.maxOffset).max() ?? 0
+        visibleRenderPanes.compactMap { paneStates[$0]?.maxOffset }.max() ?? 0
     }
 }

@@ -1,5 +1,33 @@
 import AppKit
 
+typealias PanePerformanceLogger = (_ operation: String, _ milliseconds: Double, _ metadata: String) -> Void
+
+private func elapsedMilliseconds(since start: UInt64) -> Double {
+    Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000.0
+}
+
+private func keyCharacterKind(_ event: NSEvent) -> String {
+    guard let characters = event.charactersIgnoringModifiers, !characters.isEmpty else {
+        return "none"
+    }
+    if characters == "\n" || characters == "\r" {
+        return "newline"
+    }
+    if characters == " " {
+        return "space"
+    }
+    if characters == "\u{7F}" {
+        return "delete"
+    }
+    if characters == "\t" {
+        return "tab"
+    }
+    if characters.count == 1 {
+        return "text"
+    }
+    return "multi"
+}
+
 final class PickButton: NSButton {
     weak var block: MDBlock?
     var picksLeft = false
@@ -72,21 +100,78 @@ protocol PaneTextClipViewDelegate: AnyObject {
     func paneTextClipView(_ clipView: PaneTextClipView, didScrollHorizontallyBy deltaX: CGFloat)
 }
 
+final class TimedScrollView: NSScrollView {
+    var performanceLogger: PanePerformanceLogger?
+
+    override func scrollWheel(with event: NSEvent) {
+        let start = DispatchTime.now().uptimeNanoseconds
+        super.scrollWheel(with: event)
+        let elapsed = elapsedMilliseconds(since: start)
+        if elapsed >= 8 {
+            performanceLogger?("verticalScrollWheel",
+                               elapsed,
+                               "deltaX=\(String(format: "%.1f", Double(event.scrollingDeltaX))) deltaY=\(String(format: "%.1f", Double(event.scrollingDeltaY))) visibleY=\(String(format: "%.1f", Double(contentView.bounds.origin.y)))")
+        }
+    }
+}
+
 final class PaneTextView: NSTextView {
     weak var clipView: PaneTextClipView?
     var undoHandler: (() -> Void)?
     var redoHandler: (() -> Void)?
+    var pane: DiffPane?
+    var performanceLogger: PanePerformanceLogger?
 
     override var acceptsFirstResponder: Bool {
         true
     }
 
     override func scrollWheel(with event: NSEvent) {
+        let start = DispatchTime.now().uptimeNanoseconds
         let deltaX = event.scrollingDeltaX
         if abs(deltaX) > abs(event.scrollingDeltaY), abs(deltaX) > 0 {
             clipView?.forwardHorizontalScroll(deltaX)
         } else {
             super.scrollWheel(with: event)
+        }
+        let elapsed = elapsedMilliseconds(since: start)
+        if elapsed >= 8 {
+            performanceLogger?("textViewScrollWheel",
+                               elapsed,
+                               "pane=\(pane?.identifier ?? "unknown") deltaX=\(String(format: "%.1f", Double(event.scrollingDeltaX))) deltaY=\(String(format: "%.1f", Double(event.scrollingDeltaY))) horizontal=\(abs(deltaX) > abs(event.scrollingDeltaY))")
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let start = DispatchTime.now().uptimeNanoseconds
+        super.keyDown(with: event)
+        let elapsed = elapsedMilliseconds(since: start)
+        if elapsed >= 8 {
+            performanceLogger?("textViewKeyDown",
+                               elapsed,
+                               "pane=\(pane?.identifier ?? "unknown") keyCode=\(event.keyCode) charKind=\(keyCharacterKind(event)) modifiers=\(event.modifierFlags.rawValue) selection=\(selectedRange().location):\(selectedRange().length) editable=\(isEditable)")
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let start = DispatchTime.now().uptimeNanoseconds
+        super.mouseDown(with: event)
+        let elapsed = elapsedMilliseconds(since: start)
+        if elapsed >= 8 {
+            performanceLogger?("textViewMouseDown",
+                               elapsed,
+                               "pane=\(pane?.identifier ?? "unknown") clickCount=\(event.clickCount) selection=\(selectedRange().location):\(selectedRange().length) editable=\(isEditable)")
+        }
+    }
+
+    override func setSelectedRange(_ charRange: NSRange) {
+        let start = DispatchTime.now().uptimeNanoseconds
+        super.setSelectedRange(charRange)
+        let elapsed = elapsedMilliseconds(since: start)
+        if elapsed >= 8 {
+            performanceLogger?("textViewSetSelectedRange",
+                               elapsed,
+                               "pane=\(pane?.identifier ?? "unknown") range=\(charRange.location):\(charRange.length) editable=\(isEditable)")
         }
     }
 
@@ -294,6 +379,7 @@ final class PaneTextClipView: NSView {
     private let textView: PaneTextView
     private let lineHeight: CGFloat
     private var textSize: NSSize
+    private let performanceLogger: PanePerformanceLogger?
     weak var delegate: PaneTextClipViewDelegate?
 
     var textOffset: CGFloat = 0 {
@@ -320,22 +406,43 @@ final class PaneTextClipView: NSView {
          lineHeight: CGFloat,
          isEditable: Bool = false,
          textDelegate: NSTextViewDelegate? = nil,
+         performanceLogger: PanePerformanceLogger? = nil,
          undoHandler: (() -> Void)? = nil,
          redoHandler: (() -> Void)? = nil) {
+        let initStart = DispatchTime.now().uptimeNanoseconds
+        var phaseParts = [String]()
         self.pane = pane
         self.lineHeight = lineHeight
+        self.performanceLogger = performanceLogger
         let measuredText = text.isEmpty ? " " : text
-        textSize = PaneTextClipView.measuredSize(for: measuredText, font: font, lineHeight: lineHeight)
+        var phaseStart = DispatchTime.now().uptimeNanoseconds
+        let measurement = PaneTextClipView.measuredSizeAndLineStats(for: measuredText,
+                                                                    font: font,
+                                                                    lineHeight: lineHeight)
+        textSize = measurement.size
+        phaseParts.append("measure=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
+        phaseStart = DispatchTime.now().uptimeNanoseconds
         textView = PaneTextView(frame: .zero)
+        phaseParts.append("createTextView=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
         super.init(frame: .zero)
+        phaseStart = DispatchTime.now().uptimeNanoseconds
         identifier = NSUserInterfaceItemIdentifier("\(pane.identifier)TextClip")
         wantsLayer = true
         layer?.masksToBounds = true
         textView.identifier = NSUserInterfaceItemIdentifier("\(pane.identifier)Text")
         textView.clipView = self
-        textView.textStorage?.setAttributedString(PaneTextClipView.attributedString(for: text,
-                                                                                    font: font,
-                                                                                    lineHeight: lineHeight))
+        textView.pane = pane
+        textView.performanceLogger = performanceLogger
+        phaseParts.append("configureClip=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
+        phaseStart = DispatchTime.now().uptimeNanoseconds
+        let attributedText = PaneTextClipView.attributedString(for: text,
+                                                              font: font,
+                                                              lineHeight: lineHeight)
+        phaseParts.append("attributed=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
+        phaseStart = DispatchTime.now().uptimeNanoseconds
+        textView.textStorage?.setAttributedString(attributedText)
+        phaseParts.append("setStorage=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
+        phaseStart = DispatchTime.now().uptimeNanoseconds
         textView.font = font
         textView.textColor = .labelColor
         textView.drawsBackground = false
@@ -357,9 +464,19 @@ final class PaneTextClipView: NSView {
         textView.isVerticallyResizable = true
         textView.autoresizingMask = []
         textView.focusRingType = .none
+        phaseParts.append("configureTextView=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
+        phaseStart = DispatchTime.now().uptimeNanoseconds
         addSubview(textView)
         setContentHuggingPriority(.defaultLow, for: .horizontal)
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        phaseParts.append("attach=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
+
+        let elapsed = elapsedMilliseconds(since: initStart)
+        if elapsed >= 8 {
+            performanceLogger?("renderTextClipInit",
+                               elapsed,
+                               "pane=\(pane.identifier) textLength=\((text as NSString).length) lineCount=\(measurement.lineCount) maxLineLength=\(measurement.maxLineLength) textSize=\(String(format: "%.1f", Double(textSize.width)))x\(String(format: "%.1f", Double(textSize.height))) editable=\(isEditable) \(phaseParts.joined(separator: " "))")
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -367,19 +484,33 @@ final class PaneTextClipView: NSView {
     }
 
     override func layout() {
+        let start = DispatchTime.now().uptimeNanoseconds
         super.layout()
         let textWidth = max(textSize.width, bounds.width + textOffset)
         let textHeight = max(textSize.height, bounds.height)
         let textFrame = NSRect(x: -textOffset, y: 0, width: textWidth, height: textHeight)
         textView.frame = textFrame
+        let elapsed = elapsedMilliseconds(since: start)
+        if elapsed >= 8 {
+            performanceLogger?("textClipLayout",
+                               elapsed,
+                               "pane=\(pane.identifier) bounds=\(String(format: "%.1f", Double(bounds.width)))x\(String(format: "%.1f", Double(bounds.height))) textSize=\(String(format: "%.1f", Double(textSize.width)))x\(String(format: "%.1f", Double(textSize.height))) offset=\(String(format: "%.1f", Double(textOffset)))")
+        }
     }
 
     override func scrollWheel(with event: NSEvent) {
+        let start = DispatchTime.now().uptimeNanoseconds
         let deltaX = event.scrollingDeltaX
         if abs(deltaX) > abs(event.scrollingDeltaY), abs(deltaX) > 0 {
             forwardHorizontalScroll(deltaX)
         } else {
             super.scrollWheel(with: event)
+        }
+        let elapsed = elapsedMilliseconds(since: start)
+        if elapsed >= 8 {
+            performanceLogger?("textClipScrollWheel",
+                               elapsed,
+                               "pane=\(pane.identifier) deltaX=\(String(format: "%.1f", Double(event.scrollingDeltaX))) deltaY=\(String(format: "%.1f", Double(event.scrollingDeltaY))) horizontal=\(abs(deltaX) > abs(event.scrollingDeltaY))")
         }
     }
 
@@ -388,13 +519,19 @@ final class PaneTextClipView: NSView {
     }
 
     func refreshTextLayout(afterReplacing range: NSRange, replacementText: String) {
+        let refreshStart = DispatchTime.now().uptimeNanoseconds
+        var phases = [String]()
         let font = textView.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         let measuredText = replacementText.isEmpty ? " " : replacementText
+        var phaseStart = DispatchTime.now().uptimeNanoseconds
         let replacementSize = PaneTextClipView.measuredSize(for: measuredText, font: font, lineHeight: lineHeight)
+        phases.append("measure=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
         textSize = NSSize(width: max(textSize.width, replacementSize.width),
                           height: textSize.height)
+        phaseStart = DispatchTime.now().uptimeNanoseconds
         invalidateIntrinsicContentSize()
         needsLayout = true
+        phases.append("invalidate=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
 
         let textLength = (textView.string as NSString).length
         let location = min(range.location, textLength)
@@ -404,26 +541,41 @@ final class PaneTextClipView: NSView {
         let displayRange = NSRange(location: location, length: length)
         if let layoutManager = textView.layoutManager,
            let textContainer = textView.textContainer {
+            phaseStart = DispatchTime.now().uptimeNanoseconds
             layoutManager.invalidateLayout(forCharacterRange: displayRange, actualCharacterRange: nil)
             layoutManager.invalidateDisplay(forCharacterRange: displayRange)
             layoutManager.ensureLayout(for: textContainer)
+            phases.append("textkit=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
         }
 
+        phaseStart = DispatchTime.now().uptimeNanoseconds
         setNeedsDisplay(bounds)
         textView.setNeedsDisplay(textView.bounds)
         textView.needsDisplay = true
         needsDisplay = true
         superview?.needsDisplay = true
+        phases.append("displayFlags=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
+        phaseStart = DispatchTime.now().uptimeNanoseconds
         layoutSubtreeIfNeeded()
         textView.displayIfNeeded()
         displayIfNeeded()
         superview?.displayIfNeeded()
+        phases.append("displayNow=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
+        let elapsed = elapsedMilliseconds(since: refreshStart)
+        if elapsed >= 8 {
+            performanceLogger?("refreshTextLayoutAfterReplacing",
+                               elapsed,
+                               "pane=\(pane.identifier) range=\(range.location):\(range.length) replacementLength=\((replacementText as NSString).length) \(phases.joined(separator: " "))")
+        }
     }
 
     func replaceText(_ text: String, preserveSelection: Bool = false) {
+        let start = DispatchTime.now().uptimeNanoseconds
+        var replaced = false
         let font = textView.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         let selection = textView.selectedRange()
         if textView.string != text {
+            replaced = true
             textView.textStorage?.setAttributedString(PaneTextClipView.attributedString(for: text,
                                                                                         font: font,
                                                                                         lineHeight: lineHeight))
@@ -434,38 +586,69 @@ final class PaneTextClipView: NSView {
             textView.setSelectedRange(NSRange(location: min(selection.location, length),
                                               length: min(selection.length, max(length - min(selection.location, length), 0))))
         }
+        let elapsed = elapsedMilliseconds(since: start)
+        if elapsed >= 8 {
+            performanceLogger?("replaceText",
+                               elapsed,
+                               "pane=\(pane.identifier) length=\((text as NSString).length) replaced=\(replaced) preserveSelection=\(preserveSelection)")
+        }
     }
 
     func refreshTextLayoutForCurrentText() {
+        let refreshStart = DispatchTime.now().uptimeNanoseconds
+        var phases = [String]()
         let font = textView.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         let measuredText = textView.string.isEmpty ? " " : textView.string
+        var phaseStart = DispatchTime.now().uptimeNanoseconds
         textSize = PaneTextClipView.measuredSize(for: measuredText, font: font, lineHeight: lineHeight)
+        phases.append("measure=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
+        phaseStart = DispatchTime.now().uptimeNanoseconds
         invalidateIntrinsicContentSize()
         needsLayout = true
+        phases.append("invalidate=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
         if let layoutManager = textView.layoutManager,
            let textContainer = textView.textContainer {
             let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
+            phaseStart = DispatchTime.now().uptimeNanoseconds
             layoutManager.invalidateLayout(forCharacterRange: fullRange, actualCharacterRange: nil)
             layoutManager.invalidateDisplay(forCharacterRange: fullRange)
             layoutManager.ensureLayout(for: textContainer)
+            phases.append("textkit=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
         }
+        phaseStart = DispatchTime.now().uptimeNanoseconds
         setNeedsDisplay(bounds)
         textView.setNeedsDisplay(textView.bounds)
         textView.needsDisplay = true
         needsDisplay = true
         superview?.needsDisplay = true
+        phases.append("displayFlags=\(String(format: "%.1f", elapsedMilliseconds(since: phaseStart)))ms")
+        let elapsed = elapsedMilliseconds(since: refreshStart)
+        if elapsed >= 8 {
+            performanceLogger?("refreshTextLayoutForCurrentText",
+                               elapsed,
+                               "pane=\(pane.identifier) length=\((textView.string as NSString).length) \(phases.joined(separator: " "))")
+        }
     }
 
     private static func measuredSize(for text: String, font: NSFont, lineHeight: CGFloat) -> NSSize {
+        measuredSizeAndLineStats(for: text, font: font, lineHeight: lineHeight).size
+    }
+
+    private static func measuredSizeAndLineStats(for text: String,
+                                                 font: NSFont,
+                                                 lineHeight: CGFloat) -> (size: NSSize, lineCount: Int, maxLineLength: Int) {
         let lines = text.components(separatedBy: "\n")
-        let maxWidth = lines
-            .map { line in
-                let measuredLine = line.isEmpty ? " " : line
-                return (measuredLine as NSString).size(withAttributes: [.font: font]).width
-            }
-            .max() ?? 1
-        return NSSize(width: ceil(maxWidth) + 1,
-                      height: max(CGFloat(max(lines.count, 1)) * lineHeight, 1))
+        var maxWidth: CGFloat = 1
+        var maxLineLength = 0
+        for line in lines {
+            let measuredLine = line.isEmpty ? " " : line
+            maxWidth = max(maxWidth, (measuredLine as NSString).size(withAttributes: [.font: font]).width)
+            maxLineLength = max(maxLineLength, (line as NSString).length)
+        }
+        return (NSSize(width: ceil(maxWidth) + 1,
+                       height: max(CGFloat(max(lines.count, 1)) * lineHeight, 1)),
+                lines.count,
+                maxLineLength)
     }
 
     private static func attributedString(for text: String, font: NSFont, lineHeight: CGFloat) -> NSAttributedString {

@@ -426,6 +426,7 @@ func testRepeatedNewlineInCompactSuffixKeepsCaretAtLineStart() throws {
 
 func testMainWindowGitModeSavesAndStagesSelectedConflict() throws {
     let repo = try makeConflictedRepository("git-ui-conflict")
+    try "review me\n".write(to: repo.appendingPathComponent("review.txt"), atomically: true, encoding: .utf8)
 
     let controller = MainWindowController()
     controller.loadView()
@@ -434,8 +435,25 @@ func testMainWindowGitModeSavesAndStagesSelectedConflict() throws {
     controller.loadGit(startPath: repo)
     layout(testWindow, controller)
 
-    assertTrue(popUpButtons(in: controller.view).contains { $0.identifier?.rawValue == "gitConflictFilePopup" && !$0.isHidden },
-               "git mode shows conflict file popup")
+    guard let outline = gitFileOutline(in: controller) else {
+        assertTrue(false, "git mode shows file browser")
+        return
+    }
+    assertTrue(views(in: controller.view, identifier: "gitFileBrowser").first?.isHidden == false,
+               "git mode shows file browser")
+    assertTrue(gitFileBrowserTitles(in: outline) == ["Needs Resolution", "Review Changes"],
+               "git mode starts with two folder rows")
+    expandGitFileBrowserFolder("Needs Resolution", in: controller)
+    expandGitFileBrowserFolder("Review Changes", in: controller)
+    let browserTitles = gitFileBrowserTitles(in: outline)
+    assertTrue(browserTitles.contains("conflict.txt"), "git mode lists conflict file inside folder")
+    assertTrue(browserTitles.contains("review.txt (untracked)"), "git mode lists ordinary changed file inside folder")
+    assertTrue(textViews(in: controller.view, identifier: "leftSide").isEmpty,
+               "git mode waits for a file selection before rendering")
+
+    selectGitFile("conflict.txt", in: controller)
+    layout(testWindow, controller)
+
     assertTrue(buttons(in: controller.view).first { $0.title == "Save and Stage" }?.isEnabled == false,
                "git save starts disabled before resolution")
     assertTrue(text(in: controller.view, identifier: "leftSide").contains("ours"), "git mode renders ours side")
@@ -455,6 +473,82 @@ func testMainWindowGitModeSavesAndStagesSelectedConflict() throws {
                "git mode stages resolved file")
     assertTrue(buttons(in: controller.view).first { $0.title == "Save and Stage" }?.isEnabled == false,
                "resolved git file cannot be saved again immediately")
+    if let outline = gitFileOutline(in: controller) {
+        guard let needsResolution = gitFileBrowserNode(titled: "Needs Resolution", in: outline),
+              let reviewChanges = gitFileBrowserNode(titled: "Review Changes", in: outline) else {
+            assertTrue(false, "git file browser keeps both folders after save")
+            return
+        }
+        let needsResolutionTitles = needsResolution.children.map(\.title)
+        let reviewChangesTitles = reviewChanges.children.map(\.title)
+        assertTrue(!needsResolutionTitles.contains("conflict.txt (saved)"),
+                   "saved conflict leaves needs resolution folder")
+        assertTrue(reviewChangesTitles.contains("conflict.txt (saved)"),
+                   "saved conflict moves to review changes folder")
+    } else {
+        assertTrue(false, "git file browser exists after save")
+    }
+}
+
+func testMainWindowGitFileBrowserSearchFiltersFolders() throws {
+    let repo = try makeConflictedRepository("git-ui-search")
+    try "review me\n".write(to: repo.appendingPathComponent("review.txt"), atomically: true, encoding: .utf8)
+    let docs = repo.appendingPathComponent("docs", isDirectory: true)
+    try FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+    try "notes\n".write(to: docs.appendingPathComponent("notes.md"), atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.loadGit(startPath: repo)
+    layout(testWindow, controller)
+
+    guard let outline = gitFileOutline(in: controller),
+          let searchField = gitFileSearchField(in: controller) else {
+        assertTrue(false, "git mode shows file browser and search")
+        return
+    }
+    assertTrue(searchField.isHidden == false, "git file search is visible in git mode")
+
+    searchGitFiles("review", in: controller)
+    layout(testWindow, controller)
+    guard let needsResolution = gitFileBrowserNode(titled: "Needs Resolution", in: outline),
+          let reviewChanges = gitFileBrowserNode(titled: "Review Changes", in: outline) else {
+        assertTrue(false, "git file browser keeps both folders while searching")
+        return
+    }
+    assertTrue(needsResolution.children.map(\.title) == ["No matches"],
+               "search shows no matches in empty conflict folder")
+    assertTrue(reviewChanges.children.map(\.title) == ["review.txt (untracked)"],
+               "search filters review changes by file name")
+    assertTrue(textViews(in: controller.view, identifier: "leftSide").isEmpty,
+               "searching files does not open a file")
+
+    searchGitFiles("conflict", in: controller)
+    layout(testWindow, controller)
+    guard let filteredNeedsResolution = gitFileBrowserNode(titled: "Needs Resolution", in: outline),
+          let filteredReviewChanges = gitFileBrowserNode(titled: "Review Changes", in: outline) else {
+        assertTrue(false, "git file browser keeps both folders after changing search")
+        return
+    }
+    assertTrue(filteredNeedsResolution.children.map(\.title) == ["conflict.txt"],
+               "search filters needs resolution by file name")
+    assertTrue(filteredReviewChanges.children.map(\.title) == ["No matches"],
+               "search hides unrelated review changes")
+
+    searchGitFiles("", in: controller)
+    layout(testWindow, controller)
+    guard let restoredNeedsResolution = gitFileBrowserNode(titled: "Needs Resolution", in: outline),
+          let restoredReviewChanges = gitFileBrowserNode(titled: "Review Changes", in: outline) else {
+        assertTrue(false, "git file browser keeps both folders after clearing search")
+        return
+    }
+    assertTrue(restoredNeedsResolution.children.map(\.title) == ["conflict.txt"],
+               "clearing search restores conflict files")
+    assertTrue(restoredReviewChanges.children.map(\.title).contains("review.txt (untracked)")
+               && restoredReviewChanges.children.map(\.title).contains("docs/notes.md (untracked)"),
+               "clearing search restores review files")
 }
 
 func testMainWindowGitModeShowsOrdinaryModifiedDiff() throws {
@@ -476,11 +570,19 @@ func testMainWindowGitModeShowsOrdinaryModifiedDiff() throws {
     controller.loadGit(startPath: repo)
     layout(testWindow, controller)
 
-    assertTrue(popUpButtons(in: controller.view).contains {
-        $0.identifier?.rawValue == "gitConflictFilePopup" &&
-            !$0.isHidden &&
-            $0.itemTitles.contains("[modified] changed.txt")
-    }, "git mode lists ordinary modified file")
+    guard let outline = gitFileOutline(in: controller) else {
+        assertTrue(false, "git mode shows file browser")
+        return
+    }
+    assertTrue(views(in: controller.view, identifier: "gitFileBrowser").first?.isHidden == false,
+               "git mode shows file browser")
+    expandGitFileBrowserFolder("Review Changes", in: controller)
+    assertTrue(gitFileBrowserTitles(in: outline).contains("changed.txt (modified)"),
+               "git mode lists ordinary modified file")
+
+    selectGitFile("changed.txt (modified)", in: controller)
+    layout(testWindow, controller)
+
     assertTrue(buttons(in: controller.view).first { $0.title == "Diff Only" }?.isEnabled == false,
                "ordinary git diff is read-only")
     assertTrue(text(in: controller.view, identifier: "leftSide").contains("before"),
@@ -489,6 +591,51 @@ func testMainWindowGitModeShowsOrdinaryModifiedDiff() throws {
                "git diff renders worktree side")
     assertTrue(pickButtons(in: controller.view).isEmpty,
                "ordinary git diff does not render merge pick buttons")
-    assertTrue(textViews(in: controller.view, identifier: "mergedSide").first?.isEditable == false,
-               "ordinary git diff keeps merged pane read-only")
+    assertTrue(textViews(in: controller.view, identifier: "mergedSide").isEmpty,
+               "ordinary git diff does not render a merged pane")
+    assertTrue(stackViews(in: controller.view, identifier: "diffTable").first?.arrangedSubviews.count == 2,
+               "ordinary git diff renders only before and after panes")
+}
+
+func testMainWindowGitModeCompactsOrdinaryModifiedDiffContext() throws {
+    let repo = try temporaryDirectory("git-ui-modified-diff-context")
+    try runGit(["init"], in: repo)
+    try runGit(["config", "user.email", "mcdiff-tests@example.com"], in: repo)
+    try runGit(["config", "user.name", "MacDiff Tests"], in: repo)
+
+    let beforeContext = (1...60).map { "before-\($0)" }
+    let afterContext = (1...60).map { "after-\($0)" }
+    let file = repo.appendingPathComponent("changed.txt")
+    try (beforeContext + ["old"] + afterContext).joined(separator: "\n")
+        .appending("\n")
+        .write(to: file, atomically: true, encoding: .utf8)
+    try runGit(["add", "changed.txt"], in: repo)
+    try runGit(["commit", "-m", "base"], in: repo)
+    try (beforeContext + ["new"] + afterContext).joined(separator: "\n")
+        .appending("\n")
+        .write(to: file, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.loadGit(startPath: repo)
+    layout(testWindow, controller)
+    selectGitFile("changed.txt (modified)", in: controller)
+    layout(testWindow, controller)
+
+    let leftLines = textLines(in: controller.view, identifier: "leftSide")
+    let rightLines = textLines(in: controller.view, identifier: "rightSide")
+    assertTrue(textViews(in: controller.view, identifier: "mergedSide").isEmpty,
+               "compacted ordinary git diff stays two-pane")
+    assertTrue(leftLines.contains("⋯") && rightLines.contains("⋯"),
+               "ordinary git diff shows collapsed context controls")
+    assertTrue(leftLines.contains("before-1") && leftLines.contains("before-60"),
+               "ordinary git diff keeps edge context before the change")
+    assertTrue(leftLines.contains("after-1") && leftLines.contains("after-60"),
+               "ordinary git diff keeps edge context after the change")
+    assertTrue(!leftLines.contains("before-30") && !rightLines.contains("after-30"),
+               "ordinary git diff omits middle unchanged context")
+    assertTrue(leftLines.count < 121 && rightLines.count < 121,
+               "ordinary git diff renders fewer rows than the full file")
 }

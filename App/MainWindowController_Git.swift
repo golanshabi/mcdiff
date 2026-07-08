@@ -1,6 +1,70 @@
 import AppKit
 
+final class GitFileBrowserNode: NSObject {
+    let title: String
+    let fileIndex: Int?
+    let isPlaceholder: Bool
+    var children: [GitFileBrowserNode]
+
+    init(title: String,
+         fileIndex: Int? = nil,
+         isPlaceholder: Bool = false,
+         children: [GitFileBrowserNode] = []) {
+        self.title = title
+        self.fileIndex = fileIndex
+        self.isPlaceholder = isPlaceholder
+        self.children = children
+    }
+
+    var isCategory: Bool {
+        fileIndex == nil && !isPlaceholder
+    }
+}
+
 extension MainWindowController {
+    func configureGitFileBrowser() {
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("gitFileBrowserColumn"))
+        column.title = ""
+        column.resizingMask = .autoresizingMask
+
+        gitFileSearchField.identifier = NSUserInterfaceItemIdentifier("gitFileSearch")
+        gitFileSearchField.placeholderString = "Search files"
+        gitFileSearchField.sendsSearchStringImmediately = true
+        gitFileSearchField.target = self
+        gitFileSearchField.action = #selector(searchGitFiles(_:))
+
+        gitFileOutline.identifier = NSUserInterfaceItemIdentifier("gitFileOutline")
+        gitFileOutline.addTableColumn(column)
+        gitFileOutline.outlineTableColumn = column
+        gitFileOutline.headerView = nil
+        gitFileOutline.rowSizeStyle = .small
+        gitFileOutline.indentationPerLevel = 16
+        gitFileOutline.allowsMultipleSelection = false
+        gitFileOutline.allowsEmptySelection = false
+        gitFileOutline.dataSource = self
+        gitFileOutline.delegate = self
+
+        gitFileBrowserScroll.identifier = NSUserInterfaceItemIdentifier("gitFileBrowserScroll")
+        gitFileBrowserScroll.documentView = gitFileOutline
+        gitFileBrowserScroll.hasVerticalScroller = true
+        gitFileBrowserScroll.hasHorizontalScroller = true
+        gitFileBrowserScroll.borderType = .lineBorder
+        gitFileBrowserScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
+        gitFileBrowserScroll.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+
+        gitFileBrowserPanel.identifier = NSUserInterfaceItemIdentifier("gitFileBrowser")
+        gitFileBrowserPanel.orientation = .vertical
+        gitFileBrowserPanel.spacing = 6
+        gitFileBrowserPanel.edgeInsets = NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
+        gitFileBrowserPanel.addArrangedSubview(gitFileSearchField)
+        gitFileBrowserPanel.addArrangedSubview(gitFileBrowserScroll)
+        gitFileBrowserPanel.isHidden = true
+    }
+
+    @objc func searchGitFiles(_ sender: NSSearchField) {
+        updateGitControls()
+    }
+
     func loadGit(startPath: URL) {
         AppLogger.info("Received git session start_path=\(startPath.path)")
         resetGitSession()
@@ -46,7 +110,9 @@ extension MainWindowController {
         }
 
         updateGitControls()
-        loadGitConflictFile(at: 0)
+        gitStatusLabel.stringValue = gitFileSelectionSummary()
+        updateButtons()
+        view.window?.makeFirstResponder(gitFileOutline)
     }
 
     func loadGitMergeTool(base: URL, local: URL, remote: URL, merged: URL) {
@@ -73,7 +139,11 @@ extension MainWindowController {
 
 
     @objc func selectGitConflictFile(_ sender: NSPopUpButton) {
-        loadGitConflictFile(at: sender.indexOfSelectedItem)
+        guard let index = sender.selectedItem?.representedObject as? Int else {
+            updateGitControls()
+            return
+        }
+        loadGitConflictFile(at: index)
     }
 
     func loadGitConflictFile(at index: Int) {
@@ -86,9 +156,10 @@ extension MainWindowController {
         var phases = [TimedPhase]()
         phases.append(timed("updateGitControls") { updateGitControls() }.1)
 
-        guard file.isConflict else {
+        let isResolvedConflict = file.isConflict && gitResolvedPaths.contains(relativePath)
+        guard file.isConflict && !isResolvedConflict else {
             saveTarget = .gitDiffPreview
-            let status = file.statusDescription ?? "changed"
+            let status = isResolvedConflict ? "saved" : (file.statusDescription ?? "changed")
             gitStatusLabel.stringValue = "Diffing \(relativePath) (\(status), HEAD -> worktree)"
             do {
                 phases.append(contentsOf: try loadGitDiffDocument(file: file, repositoryRoot: gitRepositoryRoot))
@@ -227,6 +298,11 @@ extension MainWindowController {
     func resetGitSession() {
         gitRepositoryRoot = nil
         gitConflictFiles = []
+        gitFileBrowserNodes = []
+        gitFileSearchField.stringValue = ""
+        isReloadingGitFileBrowser = true
+        gitFileOutline.reloadData()
+        isReloadingGitFileBrowser = false
         selectedGitConflictIndex = nil
         gitResolvedPaths = []
         gitFilePopup.removeAllItems()
@@ -243,30 +319,132 @@ extension MainWindowController {
     }
 
     func updateGitControls() {
-        gitFilePopup.removeAllItems()
-        for file in gitConflictFiles {
-            gitFilePopup.addItem(withTitle: gitFileTitle(for: file))
+        let searchText = gitFileSearchText()
+        let conflictedIndexes = gitConflictFiles.indices.filter { index in
+            let file = gitConflictFiles[index]
+            return file.isConflict
+                && !gitResolvedPaths.contains(file.relativePath ?? "")
+                && gitFileMatchesSearch(file, searchText: searchText)
         }
-        if let selectedGitConflictIndex, selectedGitConflictIndex >= 0, selectedGitConflictIndex < gitConflictFiles.count {
-            gitFilePopup.selectItem(at: selectedGitConflictIndex)
+        let changedIndexes = gitConflictFiles.indices.filter { index in
+            let file = gitConflictFiles[index]
+            return (!file.isConflict || gitResolvedPaths.contains(file.relativePath ?? ""))
+                && gitFileMatchesSearch(file, searchText: searchText)
+        }
+        let emptyTitle = searchText.isEmpty ? "No files" : "No matches"
+        gitFileBrowserNodes = [
+            gitFileBrowserSection(title: "Needs Resolution",
+                                  indexes: Array(conflictedIndexes),
+                                  emptyTitle: emptyTitle),
+            gitFileBrowserSection(title: "Review Changes",
+                                  indexes: Array(changedIndexes),
+                                  emptyTitle: emptyTitle)
+        ]
+        reloadGitFileBrowser()
+    }
+
+    func gitFileBrowserSection(title: String, indexes: [Int], emptyTitle: String) -> GitFileBrowserNode {
+        let children = indexes.isEmpty
+            ? [GitFileBrowserNode(title: emptyTitle, isPlaceholder: true)]
+            : indexes.map { index in
+                GitFileBrowserNode(title: gitFileTitle(for: gitConflictFiles[index]),
+                                   fileIndex: index)
+            }
+        return GitFileBrowserNode(title: title, children: children)
+    }
+
+    func reloadGitFileBrowser() {
+        isReloadingGitFileBrowser = true
+        gitFileOutline.reloadData()
+        if !gitFileSearchText().isEmpty {
+            for node in gitFileBrowserNodes {
+                gitFileOutline.expandItem(node)
+            }
+        }
+
+        if let selectedGitConflictIndex,
+           let node = gitFileBrowserNode(for: selectedGitConflictIndex),
+           let parent = gitFileBrowserParentNode(containing: selectedGitConflictIndex) {
+            gitFileOutline.expandItem(parent)
+            let row = gitFileOutline.row(forItem: node)
+            if row >= 0 {
+                gitFileOutline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                gitFileOutline.scrollRowToVisible(row)
+            }
+        } else if gitFileOutline.numberOfRows > 0 {
+            gitFileOutline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
+
+        isReloadingGitFileBrowser = false
+    }
+
+    func gitFileSearchText() -> String {
+        gitFileSearchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func gitFileMatchesSearch(_ file: MDGitConflictFile, searchText: String) -> Bool {
+        let tokens = normalizedGitFileSearchText(searchText)
+            .split(whereSeparator: \.isWhitespace)
+        guard !tokens.isEmpty else { return true }
+
+        let haystack = normalizedGitFileSearchText([
+            gitFileTitle(for: file),
+            file.relativePath ?? "",
+            file.statusDescription ?? "",
+            file.message ?? ""
+        ].joined(separator: " "))
+        return tokens.allSatisfy { haystack.contains($0) }
+    }
+
+    func normalizedGitFileSearchText(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+    }
+
+    func gitFileBrowserNode(for fileIndex: Int) -> GitFileBrowserNode? {
+        for section in gitFileBrowserNodes {
+            if let node = section.children.first(where: { $0.fileIndex == fileIndex }) {
+                return node
+            }
+        }
+        return nil
+    }
+
+    func gitFileBrowserParentNode(containing fileIndex: Int) -> GitFileBrowserNode? {
+        gitFileBrowserNodes.first { section in
+            section.children.contains { $0.fileIndex == fileIndex }
         }
     }
 
     func gitFileTitle(for file: MDGitConflictFile) -> String {
         let relativePath = file.relativePath ?? ""
         if gitResolvedPaths.contains(relativePath) {
-            return "[saved] \(relativePath)"
+            return "\(relativePath) (saved)"
         }
         if file.isConflict && !file.isTextConflict {
-            return "[unsupported] \(relativePath)"
+            return "\(relativePath) (unsupported)"
         }
         if file.isConflict {
-            return "[conflict] \(relativePath)"
+            return relativePath
         }
         if let status = file.statusDescription, !status.isEmpty {
-            return "[\(status)] \(relativePath)"
+            return "\(relativePath) (\(status))"
         }
         return relativePath
+    }
+
+    func gitFileSelectionSummary() -> String {
+        let conflictedCount = gitConflictFiles.filter { file in
+            file.isConflict && !gitResolvedPaths.contains(file.relativePath ?? "")
+        }.count
+        let changedCount = gitConflictFiles.count - conflictedCount
+        let resolutionText = conflictedCount == 1
+            ? "1 file needs resolution"
+            : "\(conflictedCount) files need resolution"
+        let reviewText = changedCount == 1
+            ? "1 change to review"
+            : "\(changedCount) changes to review"
+        return "Choose a file (\(resolutionText), \(reviewText))."
     }
 
     func nextUnresolvedGitConflictIndex(after currentIndex: Int?) -> Int? {
@@ -282,4 +460,80 @@ extension MainWindowController {
         return nil
     }
 
+}
+
+extension MainWindowController: NSOutlineViewDataSource, NSOutlineViewDelegate {
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        if item == nil {
+            return gitFileBrowserNodes.count
+        }
+        return (item as? GitFileBrowserNode)?.children.count ?? 0
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        if item == nil {
+            return gitFileBrowserNodes[index]
+        }
+        return (item as? GitFileBrowserNode)?.children[index] ?? GitFileBrowserNode(title: "")
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        guard let node = item as? GitFileBrowserNode else { return false }
+        return !node.children.isEmpty
+    }
+
+    func outlineView(_ outlineView: NSOutlineView,
+                     viewFor tableColumn: NSTableColumn?,
+                     item: Any) -> NSView? {
+        guard let node = item as? GitFileBrowserNode else { return nil }
+        let identifier = NSUserInterfaceItemIdentifier("gitFileBrowserCell")
+        let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView
+            ?? NSTableCellView()
+        cell.identifier = identifier
+
+        let textField: NSTextField
+        if let existing = cell.textField {
+            textField = existing
+        } else {
+            textField = NSTextField(labelWithString: "")
+            textField.translatesAutoresizingMaskIntoConstraints = false
+            textField.lineBreakMode = .byTruncatingMiddle
+            cell.addSubview(textField)
+            cell.textField = textField
+            NSLayoutConstraint.activate([
+                textField.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+                textField.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -2),
+                textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+            ])
+        }
+
+        textField.stringValue = node.title
+        textField.font = node.isCategory
+            ? NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+            : NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        textField.textColor = node.isPlaceholder ? .secondaryLabelColor : .labelColor
+        return cell
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
+        guard let node = item as? GitFileBrowserNode else { return true }
+        return !node.isPlaceholder
+    }
+
+    func outlineViewSelectionDidChange(_ notification: Notification) {
+        guard !isReloadingGitFileBrowser,
+              let outlineView = notification.object as? NSOutlineView,
+              outlineView === gitFileOutline else {
+            return
+        }
+
+        let row = gitFileOutline.selectedRow
+        guard row >= 0,
+              let node = gitFileOutline.item(atRow: row) as? GitFileBrowserNode,
+              let fileIndex = node.fileIndex,
+              fileIndex != selectedGitConflictIndex else {
+            return
+        }
+        loadGitConflictFile(at: fileIndex)
+    }
 }

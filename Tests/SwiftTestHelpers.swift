@@ -53,6 +53,74 @@ func popUpButtons(in view: NSView) -> [NSPopUpButton] {
     allSubviews(of: view).compactMap { $0 as? NSPopUpButton }
 }
 
+func searchFields(in view: NSView) -> [NSSearchField] {
+    allSubviews(of: view).compactMap { $0 as? NSSearchField }
+}
+
+func outlineViews(in view: NSView) -> [NSOutlineView] {
+    allSubviews(of: view).compactMap { $0 as? NSOutlineView }
+}
+
+func gitFileSearchField(in controller: MainWindowController) -> NSSearchField? {
+    searchFields(in: controller.view).first { $0.identifier?.rawValue == "gitFileSearch" }
+}
+
+func gitFileOutline(in controller: MainWindowController) -> NSOutlineView? {
+    outlineViews(in: controller.view).first { $0.identifier?.rawValue == "gitFileOutline" }
+}
+
+func gitFileBrowserTitles(in outline: NSOutlineView) -> [String] {
+    (0..<outline.numberOfRows).compactMap { row in
+        (outline.item(atRow: row) as? GitFileBrowserNode)?.title
+    }
+}
+
+func gitFileBrowserNode(titled title: String, in outline: NSOutlineView) -> GitFileBrowserNode? {
+    for row in 0..<outline.numberOfRows {
+        if let node = outline.item(atRow: row) as? GitFileBrowserNode,
+           node.title == title {
+            return node
+        }
+    }
+    return nil
+}
+
+func expandGitFileBrowserFolder(_ title: String, in controller: MainWindowController) {
+    guard let outline = gitFileOutline(in: controller),
+          let node = gitFileBrowserNode(titled: title, in: outline) else {
+        assertTrue(false, "git file browser has folder \(title)")
+        return
+    }
+    outline.expandItem(node)
+}
+
+func searchGitFiles(_ query: String, in controller: MainWindowController) {
+    guard let field = gitFileSearchField(in: controller) else {
+        assertTrue(false, "git file search field exists")
+        return
+    }
+    field.stringValue = query
+    controller.searchGitFiles(field)
+}
+
+func selectGitFile(_ title: String, in controller: MainWindowController) {
+    guard let outline = gitFileOutline(in: controller) else {
+        assertTrue(false, "git file outline exists")
+        return
+    }
+
+    outline.expandItem(nil, expandChildren: true)
+    guard let node = gitFileBrowserNode(titled: title, in: outline) else {
+        assertTrue(false, "git file browser contains \(title)")
+        return
+    }
+    let row = outline.row(forItem: node)
+    assertTrue(row >= 0, "git file browser row is visible for \(title)")
+    outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    controller.outlineViewSelectionDidChange(Notification(name: NSOutlineView.selectionDidChangeNotification,
+                                                         object: outline))
+}
+
 func views(in view: NSView, identifier: String) -> [NSView] {
     allSubviews(of: view).filter { $0.identifier?.rawValue == identifier }
 }

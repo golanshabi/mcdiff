@@ -4,7 +4,6 @@ extension MainWindowController {
     func render(preservingVerticalPosition: Bool) {
         let previousVisibleOrigin = scroll.contentView.bounds.origin
         var phases = [TimedPhase]()
-        phases.append(timed("contentWidths") { updatePaneContentWidths() }.1)
         phases.append(timed("clearViews") {
             paneTextClipViews = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, [PaneTextClipView]()) })
             paneColumnViews = [:]
@@ -18,7 +17,7 @@ extension MainWindowController {
             }
         }.1)
         guard let document else {
-            logPerformance("render", phases: phases, metadata: "document=none", minimumTotalMilliseconds: 75)
+            logPerformance("render", phases: phases, metadata: "document=none", minimumTotalMilliseconds: 16)
             return
         }
         // Blocks are rendered from the mutable bridge objects, so choosing a
@@ -27,6 +26,11 @@ extension MainWindowController {
         phases.append(planPhase)
         mergedTextRanges = plan.mergedTextRanges
         renderedBlockRows = plan.blockRows
+        logRenderTrace("plan",
+                       milliseconds: planPhase.milliseconds,
+                       metadata: "totalRows=\(plan.totalRows) slots=\(plan.blockSlots.count) mergedRanges=\(plan.mergedTextRanges.count) \(renderPlanPaneSummary(plan))",
+                       minimumMilliseconds: 16)
+        phases.append(timed("contentWidths") { updatePaneContentWidths(for: plan) }.1)
         let (_, tablePhase) = timed("views") { stack.addArrangedSubview(diffTableView(for: plan)) }
         phases.append(tablePhase)
         phases.append(timed("refreshWidths") { refreshPaneViewportWidths() }.1)
@@ -40,29 +44,83 @@ extension MainWindowController {
         logPerformance("render",
                        phases: phases,
                        metadata: "blocks=\(document.blocks.count) rows=\(plan.totalRows) preserving=\(preservingVerticalPosition)",
-                       minimumTotalMilliseconds: 75)
+                       minimumTotalMilliseconds: 16)
     }
 
     func diffTableView(for plan: RenderPlan) -> NSView {
+        var phases = [TimedPhase]()
         let row = NSStackView()
         row.identifier = NSUserInterfaceItemIdentifier("diffTable")
         row.orientation = .horizontal
         row.spacing = 0
 
-        let leftPane = paneColumnView(for: plan, pane: .left)
-        let mergedPane = paneColumnView(for: plan, pane: .merged)
-        let rightPane = paneColumnView(for: plan, pane: .right)
+        var paneViews = [DiffPane: NSView]()
+        for pane in plan.visiblePanes {
+            let (paneView, panePhase) = timed(renderPanePhaseName(for: pane)) {
+                paneColumnView(for: plan, pane: pane)
+            }
+            phases.append(panePhase)
+            paneViews[pane] = paneView
+        }
+        var leftPickColumn: NSView?
+        var rightPickColumn: NSView?
+        if plan.visiblePanes == DiffPane.allCases {
+            let (column, phase) = timed("leftPickColumn") {
+                pickButtonColumn(for: plan.blockSlots, picksLeft: true)
+            }
+            phases.append(phase)
+            leftPickColumn = column
 
-        row.addArrangedSubview(leftPane)
-        row.addArrangedSubview(pickButtonColumn(for: plan.blockSlots, picksLeft: true))
-        row.addArrangedSubview(mergedPane)
-        row.addArrangedSubview(pickButtonColumn(for: plan.blockSlots, picksLeft: false))
-        row.addArrangedSubview(rightPane)
-        NSLayoutConstraint.activate([
-            leftPane.widthAnchor.constraint(equalTo: mergedPane.widthAnchor),
-            rightPane.widthAnchor.constraint(equalTo: mergedPane.widthAnchor)
-        ])
+            let (rightColumn, rightPhase) = timed("rightPickColumn") {
+                pickButtonColumn(for: plan.blockSlots, picksLeft: false)
+            }
+            phases.append(rightPhase)
+            rightPickColumn = rightColumn
+        }
+
+        phases.append(timed("addSubviews") {
+            if plan.visiblePanes == DiffPane.allCases,
+               let leftPane = paneViews[.left],
+               let mergedPane = paneViews[.merged],
+               let rightPane = paneViews[.right],
+               let leftPickColumn,
+               let rightPickColumn {
+                row.addArrangedSubview(leftPane)
+                row.addArrangedSubview(leftPickColumn)
+                row.addArrangedSubview(mergedPane)
+                row.addArrangedSubview(rightPickColumn)
+                row.addArrangedSubview(rightPane)
+            } else {
+                for pane in plan.visiblePanes {
+                    if let paneView = paneViews[pane] {
+                        row.addArrangedSubview(paneView)
+                    }
+                }
+            }
+        }.1)
+        phases.append(timed("equalWidthConstraints") {
+            let renderedPanes = plan.visiblePanes.compactMap { paneViews[$0] }
+            guard let firstPane = renderedPanes.first else { return }
+            NSLayoutConstraint.activate(renderedPanes.dropFirst().map {
+                $0.widthAnchor.constraint(equalTo: firstPane.widthAnchor)
+            })
+        }.1)
+        logPerformance("renderViews",
+                       phases: phases,
+                       metadata: "totalRows=\(plan.totalRows) slots=\(plan.blockSlots.count) \(renderPlanPaneSummary(plan))",
+                       minimumTotalMilliseconds: 16)
         return row
+    }
+
+    func renderPanePhaseName(for pane: DiffPane) -> String {
+        switch pane {
+            case .left:
+                return "leftPane"
+            case .merged:
+                return "mergedPane"
+            case .right:
+                return "rightPane"
+        }
     }
 
     func pickButtonColumn(for slots: [BlockRenderSlot], picksLeft: Bool) -> NSView {
@@ -107,80 +165,122 @@ extension MainWindowController {
 
     func paneColumnView(for plan: RenderPlan, pane: DiffPane) -> NSView {
         let content = plan.panes[pane] ?? PaneRenderContent()
-        let view = PaneColumnView()
-        view.identifier = NSUserInterfaceItemIdentifier(identifier(for: pane))
-        view.lineHeight = lineHeight
-        view.backgroundRuns = content.backgroundRuns
-        paneColumnViews[pane] = view
-        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        var phases = [TimedPhase]()
+        let (view, containerPhase) = timed("container") { () -> PaneColumnView in
+            let view = PaneColumnView()
+            view.identifier = NSUserInterfaceItemIdentifier(identifier(for: pane))
+            view.lineHeight = lineHeight
+            view.backgroundRuns = content.backgroundRuns
+            paneColumnViews[pane] = view
+            view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            return view
+        }
+        phases.append(containerPhase)
 
-        let layout = NSStackView()
-        layout.orientation = .horizontal
-        layout.spacing = paneContentSpacing
-        layout.alignment = .top
-        layout.translatesAutoresizingMaskIntoConstraints = false
-        layout.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        layout.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        view.addSubview(layout)
-        NSLayoutConstraint.activate([
-            layout.topAnchor.constraint(equalTo: view.topAnchor),
-            layout.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            layout.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: paneInset),
-            layout.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -paneInset)
-        ])
+        let (layout, layoutPhase) = timed("layoutContainer") { () -> NSStackView in
+            let layout = NSStackView()
+            layout.orientation = .horizontal
+            layout.spacing = paneContentSpacing
+            layout.alignment = .top
+            layout.translatesAutoresizingMaskIntoConstraints = false
+            layout.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            layout.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            view.addSubview(layout)
+            NSLayoutConstraint.activate([
+                layout.topAnchor.constraint(equalTo: view.topAnchor),
+                layout.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                layout.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: paneInset),
+                layout.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -paneInset)
+            ])
+            return layout
+        }
+        phases.append(layoutPhase)
 
         if pane != .merged {
-            let numberIdentifier = NSUserInterfaceItemIdentifier("\(identifier(for: pane))LineNumbers")
-            if content.lineNumberControls.isEmpty {
-                let numbers = NSTextField(labelWithString: "")
-                numbers.identifier = numberIdentifier
-                numbers.attributedStringValue = attributedLineNumberText(content.lineNumberLines.joined(separator: "\n"))
-                numbers.alignment = .right
-                numbers.textColor = .secondaryLabelColor
-                numbers.font = lineNumberFont
-                numbers.lineBreakMode = .byClipping
-                numbers.maximumNumberOfLines = 0
-                numbers.widthAnchor.constraint(equalToConstant: lineNumberWidth).isActive = true
-                layout.addArrangedSubview(numbers)
-                paneLineNumberViews[pane] = numbers
-            } else {
-                let numbers = PaneLineNumberView(lineNumberLines: content.lineNumberLines,
-                                                 controls: content.lineNumberControls,
-                                                 font: lineNumberFont,
-                                                 lineHeight: lineHeight,
-                                                 clickHandler: { [weak self] blockIndex, action in
-                                                     self?.expandCompactContext(blockIndex: blockIndex, action: action)
-                                                 })
-                numbers.identifier = numberIdentifier
-                numbers.widthAnchor.constraint(equalToConstant: lineNumberWidth).isActive = true
-                layout.addArrangedSubview(numbers)
-                paneLineNumberViews[pane] = numbers
-            }
+            phases.append(timed("lineNumbers") {
+                let numberIdentifier = NSUserInterfaceItemIdentifier("\(identifier(for: pane))LineNumbers")
+                if content.lineNumberControls.isEmpty {
+                    let numbers = NSTextField(labelWithString: "")
+                    numbers.identifier = numberIdentifier
+                    numbers.attributedStringValue = attributedLineNumberText(content.lineNumberLines.joined(separator: "\n"))
+                    numbers.alignment = .right
+                    numbers.textColor = .secondaryLabelColor
+                    numbers.font = lineNumberFont
+                    numbers.lineBreakMode = .byClipping
+                    numbers.maximumNumberOfLines = 0
+                    numbers.widthAnchor.constraint(equalToConstant: lineNumberWidth).isActive = true
+                    layout.addArrangedSubview(numbers)
+                    paneLineNumberViews[pane] = numbers
+                } else {
+                    let numbers = PaneLineNumberView(lineNumberLines: content.lineNumberLines,
+                                                     controls: content.lineNumberControls,
+                                                     font: lineNumberFont,
+                                                     lineHeight: lineHeight,
+                                                     clickHandler: { [weak self] blockIndex, action in
+                                                         self?.expandCompactContext(blockIndex: blockIndex, action: action)
+                                                     })
+                    numbers.identifier = numberIdentifier
+                    numbers.widthAnchor.constraint(equalToConstant: lineNumberWidth).isActive = true
+                    layout.addArrangedSubview(numbers)
+                    paneLineNumberViews[pane] = numbers
+                }
+            }.1)
         }
 
-        let text = content.textLines.joined(separator: "\n")
-        let clip = PaneTextClipView(text: text,
-                                    pane: pane,
-                                    font: paneTextFont,
-                                    lineHeight: lineHeight,
-                                    isEditable: pane == .merged && !isGitDiffPreview,
-                                    textDelegate: pane == .merged && !isGitDiffPreview ? self : nil,
-                                    undoHandler: { [weak self] in self?.performUndo() },
-                                    redoHandler: { [weak self] in self?.performRedo() })
-        clip.delegate = self
-        clip.textOffset = paneStates[pane]?.offset ?? 0
-        paneTextClipViews[pane, default: []].append(clip)
-        if pane == .merged {
-            mergedTextView = clip.editableTextView
+        var text = ""
+        phases.append(timed("joinText") {
+            text = content.textLines.joined(separator: "\n")
+        }.1)
+        let textLength = (text as NSString).length
+        let (clip, textClipPhase) = timed("textClip") {
+            PaneTextClipView(text: text,
+                             pane: pane,
+                             font: paneTextFont,
+                             lineHeight: lineHeight,
+                             isEditable: pane == .merged && !isGitDiffPreview,
+                             textDelegate: pane == .merged && !isGitDiffPreview ? self : nil,
+                             performanceLogger: { [weak self] operation, milliseconds, metadata in
+                                 if operation.hasPrefix("render") {
+                                     self?.logRenderTrace(operation,
+                                                          milliseconds: milliseconds,
+                                                          metadata: metadata)
+                                 } else {
+                                     self?.logInputPerformance(operation, milliseconds: milliseconds, metadata: metadata)
+                                 }
+                             },
+                             undoHandler: { [weak self] in self?.performUndo() },
+                             redoHandler: { [weak self] in self?.performRedo() })
         }
-        layout.addArrangedSubview(clip)
+        phases.append(textClipPhase)
+        phases.append(timed("attachTextClip") {
+            clip.delegate = self
+            clip.textOffset = paneStates[pane]?.offset ?? 0
+            paneTextClipViews[pane, default: []].append(clip)
+            if pane == .merged {
+                mergedTextView = clip.editableTextView
+            }
+            layout.addArrangedSubview(clip)
+        }.1)
+
+        logPerformance("renderPaneViews",
+                       phases: phases,
+                       metadata: "pane=\(pane.identifier) rows=\(content.textLines.count) textLength=\(textLength) lineNumberRows=\(content.lineNumberLines.count) lineNumberControls=\(content.lineNumberControls.count) backgroundRuns=\(content.backgroundRuns.count) editable=\(pane == .merged && !isGitDiffPreview)",
+                       minimumTotalMilliseconds: 16)
 
         return view
     }
 
+    func renderPlanPaneSummary(_ plan: RenderPlan) -> String {
+        plan.visiblePanes.compactMap { pane -> String? in
+            guard let content = plan.panes[pane] else { return nil }
+            return "\(pane.identifier)Rows=\(content.textLines.count) \(pane.identifier)LineNumbers=\(content.lineNumberLines.count) \(pane.identifier)BackgroundRuns=\(content.backgroundRuns.count)"
+        }.joined(separator: " ")
+    }
+
     func renderPlan(for document: MDDocument) -> RenderPlan {
-        var panes = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, PaneRenderContent()) })
+        let visiblePanes = panesForCurrentRender
+        var panes = Dictionary(uniqueKeysWithValues: visiblePanes.map { ($0, PaneRenderContent()) })
         var slots = [BlockRenderSlot]()
         var blockRows = [Int: BlockRenderRows]()
         var mergedRanges = [MergedBlockTextRange]()
@@ -190,7 +290,7 @@ extension MainWindowController {
         var mergedHasPreviousLine = false
 
         for (blockIndex, block) in document.blocks.enumerated() {
-            let displayed = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map {
+            let displayed = Dictionary(uniqueKeysWithValues: visiblePanes.map {
                 ($0, displayedContent(for: block,
                                        blockIndex: blockIndex,
                                        pane: $0,
@@ -198,7 +298,7 @@ extension MainWindowController {
             })
             let rowCount = renderRowCount(for: block, displayed: displayed)
 
-            for pane in DiffPane.allCases {
+            for pane in visiblePanes {
                 guard let display = displayed[pane] else { continue }
                 var lines = display.lines
                 if pane == .merged {
@@ -274,7 +374,7 @@ extension MainWindowController {
         }
 
         if totalRows == 0 {
-            for pane in DiffPane.allCases {
+            for pane in visiblePanes {
                 panes[pane]?.textLines.append("")
                 if pane != .merged {
                     panes[pane]?.lineNumberLines.append("")
@@ -284,6 +384,7 @@ extension MainWindowController {
         }
 
         return RenderPlan(panes: panes,
+                          visiblePanes: visiblePanes,
                           blockSlots: slots,
                           blockRows: blockRows,
                           mergedTextRanges: mergedRanges,
@@ -355,7 +456,7 @@ extension MainWindowController {
                                   mergedStartLine: Int) -> PaneDisplay {
         let full = displayedLines(for: block, pane: pane, mergedStartLine: mergedStartLine)
         let editable = !rendersConflictContextOnly || block.kind == .changed
-        guard rendersConflictContextOnly, block.kind == .equal else {
+        guard rendersUnchangedContextCompactly, block.kind == .equal else {
             return PaneDisplay(lines: full.lines,
                                start: full.start,
                                lineNumberLines: nil,

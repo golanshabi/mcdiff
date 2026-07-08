@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debugging"
+  short_description: "Newest-log guided debugging notes"
+  default_prompt: "Use $debugging to investigate a bug from the latest logs and capture the findings in a debug markdown file."

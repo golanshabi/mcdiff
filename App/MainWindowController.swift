@@ -41,6 +41,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
 
     struct RenderPlan {
         var panes: [DiffPane: PaneRenderContent]
+        var visiblePanes: [DiffPane]
         var blockSlots: [BlockRenderSlot]
         var blockRows: [Int: BlockRenderRows]
         var mergedTextRanges: [MergedBlockTextRange]
@@ -107,7 +108,11 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     let saveButton = NSButton(title: "Save Result", target: nil, action: nil)
     let gitFilePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     let gitStatusLabel = NSTextField(labelWithString: "")
-    let scroll = NSScrollView()
+    let gitFileBrowserPanel = NSStackView()
+    let gitFileSearchField = NSSearchField()
+    let gitFileBrowserScroll = NSScrollView()
+    let gitFileOutline = NSOutlineView()
+    let scroll = TimedScrollView()
     let stack = NSStackView()
     let horizontalScrollerRow = NSStackView()
     let paneScrollerStack = NSStackView()
@@ -123,9 +128,13 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     var saveTarget = SaveTarget.savePanel
     var gitRepositoryRoot: URL?
     var gitConflictFiles = [MDGitConflictFile]()
+    var gitFileBrowserNodes = [GitFileBrowserNode]()
     var selectedGitConflictIndex: Int?
     var gitResolvedPaths = Set<String>()
+    var isReloadingGitFileBrowser = false
     var paneScrollers = [DiffPane: PaneHorizontalSlider]()
+    var paneScrollerSpacers = [DiffPane: NSView]()
+    var visibleRenderPanes = DiffPane.allCases
     var paneStates = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, PaneHorizontalState()) })
     var paneTextClipViews = Dictionary(uniqueKeysWithValues: DiffPane.allCases.map { ($0, [PaneTextClipView]()) })
     var paneColumnViews = [DiffPane: PaneColumnView]()
@@ -152,6 +161,15 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         }
     }
 
+    var rendersUnchangedContextCompactly: Bool {
+        switch saveTarget {
+            case .gitWorktreeFile, .mergeToolOutput, .gitDiffPreview:
+                return true
+            case .savePanel:
+                return false
+        }
+    }
+
     var isGitDiffPreview: Bool {
         if case .gitDiffPreview = saveTarget {
             return true
@@ -159,11 +177,19 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         return false
     }
 
+    var panesForCurrentRender: [DiffPane] {
+        isGitDiffPreview ? [.left, .right] : DiffPane.allCases
+    }
+
     override func loadView() {
         AppLogger.info("Loading main view.")
         view = NSView()
+        scroll.performanceLogger = { [weak self] operation, milliseconds, metadata in
+            self?.logInputPerformance(operation, milliseconds: milliseconds, metadata: metadata)
+        }
 
         gitFilePopup.identifier = NSUserInterfaceItemIdentifier("gitConflictFilePopup")
+        gitFilePopup.isHidden = true
         gitStatusLabel.identifier = NSUserInterfaceItemIdentifier("gitStatusLabel")
         gitStatusLabel.textColor = .secondaryLabelColor
         gitStatusLabel.lineBreakMode = .byTruncatingMiddle
@@ -185,8 +211,21 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         scroll.hasHorizontalScroller = false
 
         configureHorizontalScrollers()
+        configureGitFileBrowser()
 
-        let root = NSStackView(views: [bar, scroll, horizontalScrollerRow])
+        let editorStack = NSStackView(views: [scroll, horizontalScrollerRow])
+        editorStack.orientation = .vertical
+        editorStack.spacing = 0
+        editorStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        editorStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let contentRow = NSStackView(views: [gitFileBrowserPanel, editorStack])
+        contentRow.orientation = .horizontal
+        contentRow.spacing = 0
+        contentRow.setContentHuggingPriority(.defaultLow, for: .vertical)
+        contentRow.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+
+        let root = NSStackView(views: [bar, contentRow])
         root.orientation = .vertical
         root.spacing = 0
         root.translatesAutoresizingMaskIntoConstraints = false
@@ -198,6 +237,7 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
             root.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 500)
         ])
+        gitFileBrowserPanel.widthAnchor.constraint(equalToConstant: 280).isActive = true
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
@@ -215,8 +255,15 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     }
 
     override func viewDidLayout() {
+        let start = DispatchTime.now().uptimeNanoseconds
         super.viewDidLayout()
         refreshPaneViewportWidths()
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000.0
+        if elapsed >= 8 {
+            logInputPerformance("viewDidLayout",
+                                milliseconds: elapsed,
+                                metadata: "viewBounds=\(format(view.bounds.width))x\(format(view.bounds.height))")
+        }
     }
 
     func load(left: URL, right: URL) {
