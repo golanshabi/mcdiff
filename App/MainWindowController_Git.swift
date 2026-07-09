@@ -448,11 +448,11 @@ extension MainWindowController {
 
             gitResolvedPaths.insert(relativePath)
             AppLogger.info("Added markerless unmerged git file relative_path=\(relativePath)")
-            phases.append(timed("updateGitControls") { updateGitControls() }.1)
             if let nextIndex = nextUnresolvedGitConflictIndex(after: selectedGitConflictIndex) {
+                phases.append(timed("updateGitControls") { updateGitControls() }.1)
                 phases.append(timed("loadNextConflict") { loadGitConflictFile(at: nextIndex) }.1)
             } else {
-                gitStatusLabel.stringValue = "All conflicts saved and staged."
+                phases.append(timed("returnToFileSelection") { returnToGitFileSelectionStart() }.1)
             }
             logPerformance("stageMarkerlessGitConflict",
                            phases: phases,
@@ -493,6 +493,17 @@ extension MainWindowController {
         mergeUndoManager.removeAllActions(withTarget: self)
         resetHorizontalOffsets()
         render(preservingVerticalPosition: false)
+    }
+
+    func returnToGitFileSelectionStart() {
+        selectedGitConflictIndex = nil
+        document = nil
+        saveTarget = .savePanel
+        clearPaneSyntaxFileNames()
+        resetEditorStateAfterDocumentLoad()
+        updateGitControls()
+        gitStatusLabel.stringValue = gitFileSelectionSummary()
+        view.window?.makeFirstResponder(gitFileOutline)
     }
 
     func updateGitControls() {
@@ -626,9 +637,17 @@ extension MainWindowController {
 
     func nextUnresolvedGitConflictIndex(after currentIndex: Int?) -> Int? {
         guard !gitConflictFiles.isEmpty else { return nil }
-        let start = ((currentIndex ?? -1) + 1) % gitConflictFiles.count
-        for offset in 0..<gitConflictFiles.count {
-            let index = (start + offset) % gitConflictFiles.count
+        let start = (currentIndex ?? -1) + 1
+        if start < gitConflictFiles.count,
+           let next = firstUnresolvedGitConflictIndex(in: start..<gitConflictFiles.count) {
+            return next
+        }
+        return firstUnresolvedGitConflictIndex(in: 0..<min(start, gitConflictFiles.count))
+    }
+
+    func firstUnresolvedGitConflictIndex(in range: Range<Int>) -> Int? {
+        for index in range {
+            guard index >= 0, index < gitConflictFiles.count else { continue }
             let file = gitConflictFiles[index]
             if file.isConflict && file.isTextConflict && !gitResolvedPaths.contains(file.relativePath ?? "") {
                 return index

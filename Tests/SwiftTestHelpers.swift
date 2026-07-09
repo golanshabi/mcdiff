@@ -258,6 +258,44 @@ func makeConflictedRepository(_ name: String) throws -> URL {
     return repo
 }
 
+func makeTwoConflictedRepository(_ name: String) throws -> URL {
+    let repo = try temporaryDirectory(name)
+    try runGit(["init"], in: repo)
+    try runGit(["config", "user.email", "mcdiff-tests@example.com"], in: repo)
+    try runGit(["config", "user.name", "MacDiff Tests"], in: repo)
+
+    let files = ["a.txt", "b.txt"]
+    for fileName in files {
+        try "base \(fileName)\n".write(to: repo.appendingPathComponent(fileName),
+                                      atomically: true,
+                                      encoding: .utf8)
+    }
+    try runGit(["add", "."], in: repo)
+    try runGit(["commit", "-m", "base"], in: repo)
+    let baseBranch = try runGit(["rev-parse", "--abbrev-ref", "HEAD"], in: repo)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    try runGit(["checkout", "-b", "ours"], in: repo)
+    for fileName in files {
+        try "ours \(fileName)\n".write(to: repo.appendingPathComponent(fileName),
+                                      atomically: true,
+                                      encoding: .utf8)
+    }
+    try runGit(["commit", "-am", "ours"], in: repo)
+
+    try runGit(["checkout", "-b", "theirs", baseBranch], in: repo)
+    for fileName in files {
+        try "theirs \(fileName)\n".write(to: repo.appendingPathComponent(fileName),
+                                        atomically: true,
+                                        encoding: .utf8)
+    }
+    try runGit(["commit", "-am", "theirs"], in: repo)
+
+    try runGit(["checkout", "ours"], in: repo)
+    _ = try runGit(["merge", "theirs"], in: repo, allowFailure: true)
+    return repo
+}
+
 func makeMarkerlessUnmergedRepository(_ name: String) throws -> URL {
     let repo = try temporaryDirectory(name)
     try runGit(["init"], in: repo)

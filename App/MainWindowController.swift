@@ -393,11 +393,11 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
                     }
                     gitResolvedPaths.insert(relativePath)
                     AppLogger.info("Saved and staged git file relative_path=\(relativePath) bytes=\(text.utf8.count)")
-                    phases.append(timed("updateGitControls") { updateGitControls() }.1)
                     if let nextIndex = nextUnresolvedGitConflictIndex(after: selectedGitConflictIndex) {
+                        phases.append(timed("updateGitControls") { updateGitControls() }.1)
                         phases.append(timed("loadNextConflict") { loadGitConflictFile(at: nextIndex) }.1)
                     } else {
-                        gitStatusLabel.stringValue = "All conflicts saved and staged."
+                        phases.append(timed("returnToFileSelection") { returnToGitFileSelectionStart() }.1)
                     }
                     logPerformance("saveGit",
                                    phases: phases,

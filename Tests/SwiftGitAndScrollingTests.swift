@@ -488,6 +488,17 @@ func testMainWindowGitModeSavesAndStagesSelectedConflict() throws {
                "git mode stages resolved file")
     assertTrue(buttons(in: controller.view).first { $0.title == "Save and Stage" }?.isEnabled == false,
                "resolved git file cannot be saved again immediately")
+    assertTrue(controller.selectedGitConflictIndex == nil,
+               "saving the last conflict clears the selected git file")
+    assertTrue(controller.document == nil,
+               "saving the last conflict returns to the blank file-selection screen")
+    assertTrue(textViews(in: controller.view, identifier: "leftSide").isEmpty
+               && textViews(in: controller.view, identifier: "mergedSide").isEmpty
+               && textViews(in: controller.view, identifier: "rightSide").isEmpty,
+               "saving the last conflict clears the diff panes")
+    assertTrue(labels(in: controller.view).contains {
+        $0.identifier?.rawValue == "gitStatusLabel" && $0.stringValue.hasPrefix("Choose a file")
+    }, "saving the last conflict restores the file-selection status")
     if let outline = gitFileOutline(in: controller) {
         guard let needsResolution = gitFileBrowserNode(titled: "Needs Resolution", in: outline),
               let reviewChanges = gitFileBrowserNode(titled: "Review Changes", in: outline) else {
@@ -503,6 +514,66 @@ func testMainWindowGitModeSavesAndStagesSelectedConflict() throws {
     } else {
         assertTrue(false, "git file browser exists after save")
     }
+}
+
+func testMainWindowGitModeSaveMovesForwardToNextConflict() throws {
+    let repo = try makeTwoConflictedRepository("git-ui-next-conflict")
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.loadGit(startPath: repo)
+    layout(testWindow, controller)
+
+    selectGitFile("a.txt", in: controller)
+    layout(testWindow, controller)
+    assertTrue(text(in: controller.view, identifier: "leftSide").contains("ours a.txt"),
+               "first conflict is loaded before saving")
+
+    pickButton(in: controller.view, picksLeft: true)?.performClick(nil)
+    layout(testWindow, controller)
+    buttons(in: controller.view).first { $0.title == "Save and Stage" }?.performClick(nil)
+    layout(testWindow, controller)
+
+    let selectedPath = controller.selectedGitConflictIndex.flatMap { controller.gitConflictFiles[$0].relativePath }
+    assertTrue(selectedPath == Optional("b.txt"),
+               "saving a conflict advances to the next unresolved conflict")
+    assertTrue(text(in: controller.view, identifier: "leftSide").contains("ours b.txt"),
+               "next conflict renders after save")
+    assertTrue(labels(in: controller.view).contains {
+        $0.identifier?.rawValue == "gitStatusLabel" && $0.stringValue == "Resolving b.txt"
+    }, "status updates to the next conflict")
+}
+
+func testMainWindowGitModeSaveWrapsToEarlierConflictBeforeReturningToStart() throws {
+    let repo = try makeTwoConflictedRepository("git-ui-next-conflict-wrap")
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.loadGit(startPath: repo)
+    layout(testWindow, controller)
+
+    selectGitFile("b.txt", in: controller)
+    layout(testWindow, controller)
+    assertTrue(text(in: controller.view, identifier: "leftSide").contains("ours b.txt"),
+               "last conflict is loaded before saving")
+
+    pickButton(in: controller.view, picksLeft: true)?.performClick(nil)
+    layout(testWindow, controller)
+    buttons(in: controller.view).first { $0.title == "Save and Stage" }?.performClick(nil)
+    layout(testWindow, controller)
+
+    let selectedPath = controller.selectedGitConflictIndex.flatMap { controller.gitConflictFiles[$0].relativePath }
+    assertTrue(selectedPath == Optional("a.txt"),
+               "saving the last listed conflict wraps to the first unresolved conflict")
+    assertTrue(text(in: controller.view, identifier: "leftSide").contains("ours a.txt"),
+               "first unresolved conflict renders after wrapping")
+    assertTrue(labels(in: controller.view).contains {
+        $0.identifier?.rawValue == "gitStatusLabel" && $0.stringValue == "Resolving a.txt"
+    }, "status updates to the wrapped conflict")
 }
 
 func testGitFileBrowserSidebarToggleHidesSidebarAndResizeHandleChangesWidth() throws {
