@@ -98,6 +98,7 @@ final class PaneHorizontalState {
 
 protocol PaneTextClipViewDelegate: AnyObject {
     func paneTextClipView(_ clipView: PaneTextClipView, didScrollHorizontallyBy deltaX: CGFloat)
+    func paneTextClipView(_ clipView: PaneTextClipView, didRequestHorizontalOffset offset: CGFloat)
 }
 
 final class TimedScrollView: NSScrollView {
@@ -145,6 +146,7 @@ final class PaneTextView: NSTextView {
     override func keyDown(with event: NSEvent) {
         let start = DispatchTime.now().uptimeNanoseconds
         super.keyDown(with: event)
+        clipView?.revealSelectionHorizontallyIfNeeded()
         let elapsed = elapsedMilliseconds(since: start)
         if elapsed >= 8 {
             performanceLogger?("textViewKeyDown",
@@ -156,6 +158,7 @@ final class PaneTextView: NSTextView {
     override func mouseDown(with event: NSEvent) {
         let start = DispatchTime.now().uptimeNanoseconds
         super.mouseDown(with: event)
+        clipView?.revealSelectionHorizontallyIfNeeded()
         let elapsed = elapsedMilliseconds(since: start)
         if elapsed >= 8 {
             performanceLogger?("textViewMouseDown",
@@ -533,6 +536,50 @@ final class PaneTextClipView: NSView {
 
     fileprivate func forwardHorizontalScroll(_ deltaX: CGFloat) {
         delegate?.paneTextClipView(self, didScrollHorizontallyBy: deltaX)
+    }
+
+    func revealSelectionHorizontallyIfNeeded(margin: CGFloat = 24) {
+        guard let offset = horizontalOffsetRevealingSelection(margin: margin) else { return }
+        delegate?.paneTextClipView(self, didRequestHorizontalOffset: offset)
+    }
+
+    func horizontalOffsetRevealingSelection(margin: CGFloat = 24) -> CGFloat? {
+        guard bounds.width > 0 else { return nil }
+        let caretX = selectionHorizontalLocation()
+        let safeMargin = min(max(margin, 0), bounds.width / 2)
+        let visibleMin = textOffset
+        let visibleMax = textOffset + bounds.width
+        let maxOffset = max(textSize.width - bounds.width, 0)
+
+        let targetOffset: CGFloat
+        if caretX < visibleMin + safeMargin {
+            targetOffset = caretX - safeMargin
+        } else if caretX > visibleMax - safeMargin {
+            targetOffset = caretX - bounds.width + safeMargin
+        } else {
+            return nil
+        }
+        return min(max(targetOffset, 0), maxOffset)
+    }
+
+    private func selectionHorizontalLocation() -> CGFloat {
+        let text = textView.string as NSString
+        guard text.length > 0 else { return 0 }
+
+        let selectedRange = textView.selectedRange()
+        let location = min(max(NSMaxRange(selectedRange), selectedRange.location), text.length)
+        var lineStart = 0
+        var lineEnd = 0
+        var contentsEnd = 0
+        text.getLineStart(&lineStart,
+                          end: &lineEnd,
+                          contentsEnd: &contentsEnd,
+                          for: NSRange(location: location, length: 0))
+        let prefixLength = max(location - lineStart, 0)
+        guard prefixLength > 0 else { return 0 }
+        let prefix = text.substring(with: NSRange(location: lineStart, length: prefixLength))
+        let font = textView.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        return ceil((prefix as NSString).size(withAttributes: [.font: font]).width)
     }
 
     func refreshTextLayout(afterReplacing range: NSRange, replacementText: String) {

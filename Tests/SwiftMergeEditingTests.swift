@@ -390,6 +390,8 @@ func testWideMergedEditDoesNotRerenderTextView() throws {
     assertTrue(afterEdit.string.contains(longLine), "wide edit appears in merged text")
     assertTrue(horizontalControl(in: controller.view, identifier: "mergedSideHorizontalScroller")?.isEnabled == true,
                "wide edit updates shared horizontal scrolling")
+    assertTrue((horizontalControl(in: controller.view, identifier: "mergedSideHorizontalScroller")?.doubleValue ?? 0) > 0,
+               "wide edit scrolls horizontally to keep the caret visible")
 }
 
 func testRebreakingLineMergedFromChangedAndEqualRowsRestoresBoundary() throws {

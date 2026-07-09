@@ -20,6 +20,20 @@ extension MainWindowController {
         applySharedHorizontalValue(sharedHorizontalValue + Double(deltaX * horizontalWheelSensitivity / maxOffset))
     }
 
+    func paneTextClipView(_ clipView: PaneTextClipView, didRequestHorizontalOffset offset: CGFloat) {
+        let maxOffset = sharedMaxOffset()
+        guard maxOffset > 0 else { return }
+        applySharedHorizontalValue(Double(offset / maxOffset))
+    }
+
+    func revealMergedSelectionHorizontally() {
+        guard let mergedTextView,
+              let clip = paneTextClipViews[.merged]?.first(where: { $0.editableTextView === mergedTextView }) else {
+            return
+        }
+        clip.revealSelectionHorizontallyIfNeeded()
+    }
+
     func configureHorizontalScrollers() {
         horizontalScrollerRow.orientation = .horizontal
         horizontalScrollerRow.spacing = 0

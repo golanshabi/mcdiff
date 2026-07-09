@@ -98,6 +98,7 @@ extension MainWindowController {
     func textDidChange(_ notification: Notification) {
         guard let textView = notification.object as? NSTextView,
               textView === mergedTextView else { return }
+        defer { revealMergedSelectionHorizontally() }
         scheduleMergedSyntaxRefresh()
         guard let edit = pendingMergedEdit else { return }
         let editStart = DispatchTime.now().uptimeNanoseconds
