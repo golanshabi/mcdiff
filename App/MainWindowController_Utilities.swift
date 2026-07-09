@@ -21,7 +21,7 @@ extension MainWindowController {
         rightButton.isHidden = isGitRepositoryMode || isMergeToolMode
         compareButton.isHidden = isGitRepositoryMode || isMergeToolMode
         gitFilePopup.isHidden = true
-        gitFileBrowserPanel.isHidden = !isGitRepositoryMode
+        applyGitFileBrowserVisibility(isGitRepositoryMode: isGitRepositoryMode)
         gitStatusLabel.isHidden = !isGitRepositoryMode && !isMergeToolMode
 
         compareButton.isEnabled = !isGitRepositoryMode && !isMergeToolMode && leftURL != nil && rightURL != nil

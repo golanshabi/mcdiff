@@ -101,6 +101,11 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     let paneContentSpacing: CGFloat = 8
     let horizontalScrollerHeight: CGFloat = 22
     let horizontalWheelSensitivity: CGFloat = 3
+    let gitFileBrowserDefaultWidth: CGFloat = 280
+    let gitFileBrowserCollapsedWidth: CGFloat = 38
+    let gitFileBrowserMinimumWidth: CGFloat = 150
+    let gitFileBrowserMaximumWidth: CGFloat = 520
+    let gitFileBrowserResizeHandleWidth: CGFloat = 6
     let gitContextLineCount = 20
     let gitContextExpansionLineCount = 5
     let markerlessConflictErrorCode = 8
@@ -112,10 +117,14 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     let saveButton = NSButton(title: "Save Result", target: nil, action: nil)
     let gitFilePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     let gitStatusLabel = NSTextField(labelWithString: "")
+    let gitFileBrowserColumn = NSStackView()
+    let gitFileBrowserToggleRow = NSStackView()
+    let gitFileBrowserToggleButton = NSButton()
     let gitFileBrowserPanel = NSStackView()
     let gitFileSearchField = NSSearchField()
     let gitFileBrowserScroll = NSScrollView()
     let gitFileOutline = NSOutlineView()
+    let gitFileBrowserResizeHandle = SidebarResizeHandle()
     let scroll = TimedScrollView()
     let stack = NSStackView()
     let horizontalScrollerRow = NSStackView()
@@ -136,6 +145,9 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     var selectedGitConflictIndex: Int?
     var gitResolvedPaths = Set<String>()
     var isReloadingGitFileBrowser = false
+    var isGitFileBrowserHidden = false
+    var gitFileBrowserLastVisibleWidth: CGFloat = 280
+    var gitFileBrowserWidthConstraint: NSLayoutConstraint?
     var paneSyntaxFileNames = [DiffPane: String]()
     var pendingMergedSyntaxRefresh: DispatchWorkItem?
     var paneScrollers = [DiffPane: PaneHorizontalSlider]()
@@ -201,8 +213,15 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         gitStatusLabel.lineBreakMode = .byTruncatingMiddle
         gitStatusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         gitStatusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        gitFileBrowserLastVisibleWidth = gitFileBrowserDefaultWidth
+        configureGitFileBrowserControls()
 
-        let bar = NSStackView(views: [leftButton, rightButton, compareButton, gitFilePopup, gitStatusLabel, saveButton])
+        let bar = NSStackView(views: [leftButton,
+                                      rightButton,
+                                      compareButton,
+                                      gitFilePopup,
+                                      gitStatusLabel,
+                                      saveButton])
         bar.orientation = .horizontal
         bar.spacing = 8
         bar.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
@@ -225,7 +244,17 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
         editorStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         editorStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let contentRow = NSStackView(views: [gitFileBrowserPanel, editorStack])
+        gitFileBrowserResizeHandle.widthProvider = { [weak self] in
+            self?.gitFileBrowserLastVisibleWidth ?? 0
+        }
+        gitFileBrowserResizeHandle.identifier = NSUserInterfaceItemIdentifier("gitFileBrowserResizeHandle")
+        gitFileBrowserResizeHandle.resizeHandler = { [weak self] width in
+            self?.resizeGitFileBrowser(to: width)
+        }
+
+        let contentRow = NSStackView(views: [gitFileBrowserColumn,
+                                             gitFileBrowserResizeHandle,
+                                             editorStack])
         contentRow.orientation = .horizontal
         contentRow.spacing = 0
         contentRow.setContentHuggingPriority(.defaultLow, for: .vertical)
@@ -243,7 +272,10 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
             root.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 500)
         ])
-        gitFileBrowserPanel.widthAnchor.constraint(equalToConstant: 280).isActive = true
+        let browserWidth = gitFileBrowserColumn.widthAnchor.constraint(equalToConstant: gitFileBrowserDefaultWidth)
+        gitFileBrowserWidthConstraint = browserWidth
+        browserWidth.isActive = true
+        gitFileBrowserResizeHandle.widthAnchor.constraint(equalToConstant: gitFileBrowserResizeHandleWidth).isActive = true
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),

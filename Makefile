@@ -30,6 +30,7 @@ SWIFT_TEST_APP_FILES := \
 	App/Logger.swift \
 	App/SyntaxHighlighter.swift \
 	App/PaneViews.swift \
+	App/SidebarResizeHandle.swift \
 	App/MainWindowController.swift \
 	App/MainWindowController_Rendering.swift \
 	App/MainWindowController_MergeEditing.swift \

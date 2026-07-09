@@ -22,6 +22,16 @@ final class GitFileBrowserNode: NSObject {
 }
 
 extension MainWindowController {
+    func configureGitFileBrowserControls() {
+        configureGitFileBrowserIconButton(gitFileBrowserToggleButton,
+                                          identifier: "gitFileBrowserToggleButton",
+                                          systemSymbolName: "sidebar.leading",
+                                          fallbackTitle: "<",
+                                          toolTip: "Hide file list",
+                                          action: #selector(toggleGitFileBrowser(_:)))
+        gitFileBrowserToggleButton.isHidden = true
+    }
+
     func configureGitFileBrowser() {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("gitFileBrowserColumn"))
         column.title = ""
@@ -52,13 +62,106 @@ extension MainWindowController {
         gitFileBrowserScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         gitFileBrowserScroll.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
 
+        configureGitFileBrowserColumn()
+
         gitFileBrowserPanel.identifier = NSUserInterfaceItemIdentifier("gitFileBrowser")
         gitFileBrowserPanel.orientation = .vertical
         gitFileBrowserPanel.spacing = 6
-        gitFileBrowserPanel.edgeInsets = NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
+        gitFileBrowserPanel.edgeInsets = NSEdgeInsets(top: 0, left: 6, bottom: 6, right: 6)
+        gitFileBrowserPanel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        gitFileBrowserPanel.setContentCompressionResistancePriority(.required, for: .horizontal)
         gitFileBrowserPanel.addArrangedSubview(gitFileSearchField)
         gitFileBrowserPanel.addArrangedSubview(gitFileBrowserScroll)
         gitFileBrowserPanel.isHidden = true
+        gitFileBrowserColumn.addArrangedSubview(gitFileBrowserPanel)
+    }
+
+    func configureGitFileBrowserColumn() {
+        gitFileBrowserColumn.identifier = NSUserInterfaceItemIdentifier("gitFileBrowserColumn")
+        gitFileBrowserColumn.orientation = .vertical
+        gitFileBrowserColumn.spacing = 4
+        gitFileBrowserColumn.edgeInsets = NSEdgeInsets(top: 6, left: 6, bottom: 0, right: 6)
+        gitFileBrowserColumn.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        gitFileBrowserColumn.setContentCompressionResistancePriority(.required, for: .horizontal)
+        gitFileBrowserColumn.isHidden = true
+
+        gitFileBrowserToggleRow.identifier = NSUserInterfaceItemIdentifier("gitFileBrowserToggleRow")
+        gitFileBrowserToggleRow.orientation = .horizontal
+        gitFileBrowserToggleRow.spacing = 0
+        gitFileBrowserToggleRow.alignment = .centerY
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        gitFileBrowserToggleRow.addArrangedSubview(gitFileBrowserToggleButton)
+        gitFileBrowserToggleRow.addArrangedSubview(spacer)
+        gitFileBrowserColumn.addArrangedSubview(gitFileBrowserToggleRow)
+    }
+
+    func configureGitFileBrowserIconButton(_ button: NSButton,
+                                           identifier: String,
+                                           systemSymbolName: String,
+                                           fallbackTitle: String,
+                                           toolTip: String,
+                                           action: Selector) {
+        button.identifier = NSUserInterfaceItemIdentifier(identifier)
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.imagePosition = .imageOnly
+        button.target = self
+        button.action = action
+        button.toolTip = toolTip
+        button.setAccessibilityLabel(toolTip)
+        if let image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: toolTip) {
+            button.image = image
+            button.title = ""
+        } else {
+            button.title = fallbackTitle
+        }
+        button.widthAnchor.constraint(equalToConstant: 26).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
+    @objc func toggleGitFileBrowser(_ sender: Any?) {
+        isGitFileBrowserHidden.toggle()
+        AppLogger.info("\(isGitFileBrowserHidden ? "Hid" : "Showed") git file browser")
+        applyGitFileBrowserVisibility(isGitRepositoryMode: gitRepositoryRoot != nil)
+        relayoutAfterGitFileBrowserWidthChange()
+    }
+
+    func resizeGitFileBrowser(to width: CGFloat) {
+        guard gitRepositoryRoot != nil, !isGitFileBrowserHidden else { return }
+        let maxWidth = min(gitFileBrowserMaximumWidth, max(gitFileBrowserMinimumWidth, view.bounds.width - 480))
+        gitFileBrowserLastVisibleWidth = min(max(width, gitFileBrowserMinimumWidth), maxWidth)
+        gitFileBrowserWidthConstraint?.constant = gitFileBrowserLastVisibleWidth
+        relayoutAfterGitFileBrowserWidthChange()
+    }
+
+    func applyGitFileBrowserVisibility(isGitRepositoryMode: Bool) {
+        let showsBrowser = isGitRepositoryMode && !isGitFileBrowserHidden
+        gitFileBrowserColumn.isHidden = !isGitRepositoryMode
+        gitFileBrowserPanel.isHidden = !showsBrowser
+        gitFileBrowserResizeHandle.isHidden = !showsBrowser
+        gitFileBrowserToggleButton.isHidden = !isGitRepositoryMode
+        updateGitFileBrowserToggleButton()
+        gitFileBrowserWidthConstraint?.constant = showsBrowser
+            ? gitFileBrowserLastVisibleWidth
+            : gitFileBrowserCollapsedWidth
+    }
+
+    func updateGitFileBrowserToggleButton() {
+        let toolTip = isGitFileBrowserHidden ? "Show file list" : "Hide file list"
+        gitFileBrowserToggleButton.toolTip = toolTip
+        gitFileBrowserToggleButton.setAccessibilityLabel(toolTip)
+        if gitFileBrowserToggleButton.image == nil {
+            gitFileBrowserToggleButton.title = isGitFileBrowserHidden ? ">" : "<"
+        }
+    }
+
+    func relayoutAfterGitFileBrowserWidthChange() {
+        view.needsLayout = true
+        view.layoutSubtreeIfNeeded()
+        refreshPaneViewportWidths()
     }
 
     @objc func searchGitFiles(_ sender: NSSearchField) {
@@ -376,6 +479,8 @@ extension MainWindowController {
         isReloadingGitFileBrowser = false
         selectedGitConflictIndex = nil
         gitResolvedPaths = []
+        isGitFileBrowserHidden = false
+        gitFileBrowserLastVisibleWidth = gitFileBrowserDefaultWidth
         gitFilePopup.removeAllItems()
         gitStatusLabel.stringValue = ""
     }

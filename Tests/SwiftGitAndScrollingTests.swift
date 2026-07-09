@@ -505,6 +505,81 @@ func testMainWindowGitModeSavesAndStagesSelectedConflict() throws {
     }
 }
 
+func testGitFileBrowserSidebarToggleHidesSidebarAndResizeHandleChangesWidth() throws {
+    let repo = try makeConflictedRepository("git-ui-file-browser-size")
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.loadGit(startPath: repo)
+    layout(testWindow, controller)
+    selectGitFile("conflict.txt", in: controller)
+    layout(testWindow, controller)
+
+    guard let browserColumn = views(in: controller.view, identifier: "gitFileBrowserColumn").first,
+          let browser = views(in: controller.view, identifier: "gitFileBrowser").first,
+          let searchField = gitFileSearchField(in: controller),
+          let toggleButton = buttons(in: controller.view).first(where: { $0.identifier?.rawValue == "gitFileBrowserToggleButton" }),
+          let resizeHandle = views(in: controller.view, identifier: "gitFileBrowserResizeHandle").first else {
+        assertTrue(false, "git mode exposes file browser controls")
+        return
+    }
+
+    assertTrue(browserColumn.isHidden == false, "git mode shows file browser column")
+    assertTrue(browser.isHidden == false, "git mode shows file browser")
+    assertTrue(resizeHandle.isHidden == false, "git mode shows file browser resize handle")
+    assertTrue(toggleButton.isHidden == false, "git mode shows stable file browser toggle")
+    assertTrue(controller.gitFileBrowserColumn.arrangedSubviews.first === controller.gitFileBrowserToggleRow,
+               "file browser toggle row sits above the search bar")
+    assertTrue(controller.gitFileBrowserToggleRow.arrangedSubviews.first === toggleButton,
+               "file browser toggle is the leftmost control in the sidebar")
+    let columnRows = controller.gitFileBrowserColumn.arrangedSubviews
+    let toggleRowIndex = columnRows.firstIndex(of: controller.gitFileBrowserToggleRow) ?? -1
+    let browserPanelIndex = columnRows.firstIndex(of: controller.gitFileBrowserPanel) ?? -1
+    assertTrue(toggleRowIndex >= 0 && toggleRowIndex < browserPanelIndex,
+               "file browser content appears below the toggle row")
+    assertTrue(controller.gitFileBrowserPanel.arrangedSubviews.first === searchField,
+               "file browser search appears directly below the toggle row")
+    let initialBrowserWidth = frame(of: browser, in: controller.view).width
+    let initialPaneWidth = paneWidths(in: controller.view, identifier: "leftSide").first ?? 0
+
+    controller.resizeGitFileBrowser(to: 180)
+    layout(testWindow, controller)
+
+    let resizedBrowserWidth = frame(of: browser, in: controller.view).width
+    let resizedPaneWidth = paneWidths(in: controller.view, identifier: "leftSide").first ?? 0
+    assertTrue(browser.isHidden == false, "resizing keeps file browser visible")
+    assertTrue(resizedBrowserWidth < initialBrowserWidth - 50,
+               "resize handle can narrow file browser")
+    assertTrue(resizedPaneWidth > initialPaneWidth + 20,
+               "narrowing the file browser gives diff panes more room")
+
+    let toggleFrameBeforeHide = frame(of: toggleButton, in: controller.view)
+    toggleButton.performClick(nil)
+    layout(testWindow, controller)
+
+    let hiddenPaneWidth = paneWidths(in: controller.view, identifier: "leftSide").first ?? 0
+    let toggleFrameAfterHide = frame(of: toggleButton, in: controller.view)
+    assertTrue(browserColumn.isHidden == false, "sidebar toggle column stays visible after hiding the file browser")
+    assertTrue(browser.isHidden, "sidebar toggle removes file browser content")
+    assertTrue(resizeHandle.isHidden, "sidebar toggle removes resize handle")
+    assertTrue(toggleButton.isHidden == false, "sidebar toggle stays visible after hiding the file browser")
+    assertTrue(abs(toggleFrameBeforeHide.midY - toggleFrameAfterHide.midY) < 2
+               && abs(toggleFrameBeforeHide.minX - toggleFrameAfterHide.minX) < 2,
+               "sidebar toggle does not move when clicked")
+    assertTrue(hiddenPaneWidth > resizedPaneWidth + 20,
+               "hiding the file browser gives diff panes the most room")
+
+    toggleButton.performClick(nil)
+    layout(testWindow, controller)
+
+    assertTrue(browser.isHidden == false, "sidebar toggle restores file browser")
+    assertTrue(resizeHandle.isHidden == false, "sidebar toggle restores resize handle")
+    assertTrue(abs(frame(of: browser, in: controller.view).width - resizedBrowserWidth) < 2,
+               "restore keeps the user's resized file browser width")
+}
+
 func testMainWindowGitModeStagesMarkerlessUnmergedFile() throws {
     let repo = try makeMarkerlessUnmergedRepository("git-ui-markerless")
     let relativePath = "markerless.txt"

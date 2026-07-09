@@ -49,6 +49,7 @@ private enum SwiftTests {
             try testMainWindowGitMergeToolSaveWritesMergedPath()
             try testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave()
             try testMainWindowGitModeSavesAndStagesSelectedConflict()
+            try testGitFileBrowserSidebarToggleHidesSidebarAndResizeHandleChangesWidth()
             try testMainWindowGitModeStagesMarkerlessUnmergedFile()
             try testMainWindowGitFileBrowserSearchFiltersFolders()
             try testMainWindowGitModeShowsOrdinaryModifiedDiff()
