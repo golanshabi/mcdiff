@@ -129,7 +129,7 @@ enum SyntaxHighlighter {
 
     private static func applyJSONColors(to attributed: NSMutableAttributedString, text: String) {
         applyStrings(to: attributed, text: text)
-        apply(pattern: #""(?:\\.|[^"\\])*"(?=\s*:)"#, color: .systemBlue, to: attributed, text: text)
+        apply(pattern: #""(?:\\.|[^"\\\n\r])*"(?=\s*:)"#, color: .systemBlue, to: attributed, text: text)
         apply(pattern: #"\b(?:true|false|null)\b"#, color: .systemPurple, to: attributed, text: text)
         apply(pattern: #"\b-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b"#, color: .systemOrange, to: attributed, text: text)
     }
@@ -161,7 +161,7 @@ enum SyntaxHighlighter {
     }
 
     private static func applyStrings(to attributed: NSMutableAttributedString, text: String) {
-        apply(pattern: #""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"#, color: .systemRed, to: attributed, text: text)
+        apply(pattern: #""(?:\\.|[^"\\\n\r])*"|'(?:\\.|[^'\\\n\r])*'"#, color: .systemRed, to: attributed, text: text)
     }
 
     private static func applyCStyleComments(to attributed: NSMutableAttributedString, text: String) {

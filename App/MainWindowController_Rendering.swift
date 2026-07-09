@@ -156,7 +156,7 @@ extension MainWindowController {
             view.addSubview(button)
             NSLayoutConstraint.activate([
                 button.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-                button.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+                button.topAnchor.constraint(equalTo: view.topAnchor),
                 button.widthAnchor.constraint(equalToConstant: 30),
                 button.heightAnchor.constraint(equalToConstant: 24)
             ])

@@ -59,6 +59,10 @@ func testMainWindowAppliesSyntaxColorsByFileType() throws {
                                                  fileName: "main.cpp",
                                                  font: font,
                                                  lineHeight: lineHeight)
+    let cppUnterminatedString = SyntaxHighlighter.attributedString(for: "EHANDLE_FMT \" attr_read=%d\nplain_identifier = 1;\n\" later\n",
+                                                                   fileName: "main.cpp",
+                                                                   font: font,
+                                                                   lineHeight: lineHeight)
     let python = SyntaxHighlighter.attributedString(for: "def run():\n    return \"ok\"\n",
                                                     fileName: "tool.py",
                                                     font: font,
@@ -70,6 +74,8 @@ func testMainWindowAppliesSyntaxColorsByFileType() throws {
                "cpp preprocessor line is syntax-colored")
     assertTrue(color(foregroundColor(in: cpp, matching: "// comment"), matches: .systemGreen),
                "cpp comment is syntax-colored")
+    assertTrue(!color(foregroundColor(in: cppUnterminatedString, matching: "plain_identifier"), matches: .systemRed),
+               "cpp unterminated strings do not color later lines as strings")
     assertTrue(color(foregroundColor(in: python, matching: "def"), matches: .systemPurple),
                "python keyword is syntax-colored")
     assertTrue(color(foregroundColor(in: python, matching: "\"ok\""), matches: .systemRed),
@@ -164,6 +170,35 @@ func testMainWindowLoadsAndPicksDiff() throws {
     assertTrue(hasColor(backgroundColors(in: controller.view, identifier: "rightSide"), blueAtLeast: 0.7), "picked right side is blue")
     assertTrue(text(in: controller.view, identifier: "mergedSide").contains("right"), "merged pane updates to picked right content")
     assertTrue(!text(in: controller.view, identifier: "mergedSide").contains("Unresolved"), "merged pane stays placeholder-free after pick")
+}
+
+func testPickButtonsStartAtTopOfMultiLineDiff() throws {
+    let files = try temporaryDirectory("multi-line-diff-arrows")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "alpha\nleft one\nleft two\nomega\n".write(to: left, atomically: true, encoding: .utf8)
+    try "alpha\nright one\nright two\nomega\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    guard let table = views(in: controller.view, identifier: "diffTable").first,
+          let useLeft = pickButton(in: controller.view, picksLeft: true),
+          let useRight = pickButton(in: controller.view, picksLeft: false) else {
+        assertTrue(false, "multi-line diff renders pick arrows")
+        return
+    }
+
+    let tableFrame = frame(of: table, in: controller.view)
+    let expectedDiffStartY = tableFrame.minY + controller.lineHeight
+    assertTrue(abs(frame(of: useLeft, in: controller.view).minY - expectedDiffStartY) <= 1,
+               "left pick arrow starts at the first changed row")
+    assertTrue(abs(frame(of: useRight, in: controller.view).minY - expectedDiffStartY) <= 1,
+               "right pick arrow starts at the first changed row")
 }
 
 func testDeletionDiffRequiresExplicitPickAndUpdatesMergedPane() {

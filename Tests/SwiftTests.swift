@@ -14,6 +14,7 @@ private enum SwiftTests {
             try testMainWindowIdenticalFilesEnableSaveWithoutPick()
             try testMainWindowAppliesSyntaxColorsByFileType()
             try testMainWindowLoadsAndPicksDiff()
+            try testPickButtonsStartAtTopOfMultiLineDiff()
             testDeletionDiffRequiresExplicitPickAndUpdatesMergedPane()
             try testBlankSourceLinesKeepLineNumbers()
             testChangedRowsKeepStablePaneWidths()

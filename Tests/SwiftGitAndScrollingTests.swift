@@ -168,6 +168,21 @@ func testMainWindowGitMergeToolCompactsLargeContextAndPreservesSave() throws {
                leftGutterLabel.contains("↕") &&
                leftGutterLabel.contains("↓"),
                "line number gutter renders icon-only expansion controls")
+    if let leftGutter = views(in: controller.view, identifier: "leftSideLineNumbers").first as? PaneLineNumberView {
+        let pillRect = NSRect(x: 0,
+                              y: 0,
+                              width: leftGutter.bounds.width,
+                              height: controller.lineHeight).insetBy(dx: 5, dy: 2)
+        for symbol in ["↑", "↕", "↓"] {
+            let symbolRect = leftGutter.controlSymbolDrawRect(symbol: symbol, in: pillRect)
+            assertTrue(abs(symbolRect.midX - pillRect.midX) <= 0.5,
+                       "\(symbol) compact context control is horizontally centered")
+            assertTrue(abs(symbolRect.midY - pillRect.midY) <= 0.5,
+                       "\(symbol) compact context control is vertically centered")
+        }
+    } else {
+        assertTrue(false, "line number gutter uses the custom control renderer")
+    }
     assertTrue(!visibleLines.contains("before 150"),
                "middle unchanged context is not rendered")
 

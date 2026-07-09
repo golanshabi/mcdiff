@@ -302,8 +302,6 @@ final class PaneLineNumberView: NSView {
 
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .right
-        let controlParagraph = NSMutableParagraphStyle()
-        controlParagraph.alignment = .center
 
         for row in 0..<rowCount {
             let rowRect = NSRect(x: 0,
@@ -316,13 +314,9 @@ final class PaneLineNumberView: NSView {
                 let pillRect = rowRect.insetBy(dx: 5, dy: 2)
                 NSColor.controlAccentColor.withAlphaComponent(0.24).setFill()
                 NSBezierPath(roundedRect: pillRect, xRadius: 4, yRadius: 4).fill()
-                (control.symbol as NSString).draw(with: rowRect.insetBy(dx: 0, dy: 1),
-                                                  options: [.usesLineFragmentOrigin, .usesFontLeading],
-                                                  attributes: [
-                                                      .font: controlFont,
-                                                      .foregroundColor: NSColor.controlAccentColor,
-                                                      .paragraphStyle: controlParagraph
-                                                  ])
+                (control.symbol as NSString).draw(at: controlSymbolDrawRect(symbol: control.symbol,
+                                                                             in: pillRect).origin,
+                                                  withAttributes: controlSymbolAttributes)
             } else {
                 let line = lineNumberLines.indices.contains(row) ? lineNumberLines[row] : ""
                 (line as NSString).draw(with: rowRect.insetBy(dx: 0, dy: 1),
@@ -362,6 +356,23 @@ final class PaneLineNumberView: NSView {
                y: CGFloat(row) * lineHeight,
                width: bounds.width,
                height: lineHeight)
+    }
+
+    private var controlSymbolAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: controlFont,
+            .foregroundColor: NSColor.controlAccentColor
+        ]
+    }
+
+    func controlSymbolDrawRect(symbol: String, in rect: NSRect) -> NSRect {
+        let size = (symbol as NSString).size(withAttributes: controlSymbolAttributes)
+        let width = ceil(size.width)
+        let height = ceil(size.height)
+        return NSRect(x: floor(rect.midX - width / 2),
+                      y: floor(rect.midY - height / 2),
+                      width: width,
+                      height: height)
     }
 
     private var displayLines: [String] {
