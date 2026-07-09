@@ -50,6 +50,20 @@ extension MainWindowController {
         alert.runModal()
     }
 
+    func markerlessConflictAlert(relativePath: String) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = markerlessConflictMessage
+        alert.informativeText = "\(relativePath) is still marked unmerged by Git, but the file has no conflict markers. Add it to Git to mark it resolved and move it to Review Changes."
+        alert.addButton(withTitle: "Add to Git")
+        alert.addButton(withTitle: "Cancel")
+        return alert
+    }
+
+    func shouldStageMarkerlessConflict(relativePath: String) -> Bool {
+        AppLogger.error("Showing markerless conflict alert: \(relativePath)")
+        return markerlessConflictAlert(relativePath: relativePath).runModal() == .alertFirstButtonReturn
+    }
+
     func timed<T>(_ name: String, _ work: () throws -> T) rethrows -> (T, TimedPhase) {
         let start = DispatchTime.now().uptimeNanoseconds
         let result = try work()

@@ -127,6 +127,8 @@ func testMainWindowLoadsAndPicksDiff() throws {
     assertTrue(useLeft?.title == "→", "left pick button points toward the middle pane")
     assertTrue(useRight != nil, "rendered Use Right button")
     assertTrue(useRight?.title == "←", "right pick button points toward the middle pane")
+    assertTrue(pickButtonBaselineOffset(useLeft) < 0, "left pick arrow is optically centered in the button")
+    assertTrue(pickButtonBaselineOffset(useRight) < 0, "right pick arrow is optically centered in the button")
     guard let leftPane = views(in: controller.view, identifier: "leftSide").first,
           let mergedPane = views(in: controller.view, identifier: "mergedSide").first,
           let rightPane = views(in: controller.view, identifier: "rightSide").first,
@@ -200,6 +202,29 @@ func testDeletionDiffRequiresExplicitPickAndUpdatesMergedPane() {
     pickButton(in: controller.view, picksLeft: true)?.performClick(nil)
     layout(testWindow, controller)
     assertTrue(textLines(in: controller.view, identifier: "mergedSide").contains("d"), "left pick keeps deleted line in merged pane")
+}
+
+func testBlankSourceLinesKeepLineNumbers() throws {
+    let files = try temporaryDirectory("blank-source-line-numbers")
+    let left = files.appendingPathComponent("left.txt")
+    let right = files.appendingPathComponent("right.txt")
+    try "a\nb\nleft\n\nz\n".write(to: left, atomically: true, encoding: .utf8)
+    try "a\nb\nright\n\nz\n".write(to: right, atomically: true, encoding: .utf8)
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.load(left: left, right: right)
+    layout(testWindow, controller)
+
+    let expected = ["1", "2", "3", "4", "5"]
+    assertTrue(labelString(in: controller.view, identifier: "leftSideLineNumbers")
+        .components(separatedBy: "\n") == expected,
+               "left gutter numbers real blank source lines")
+    assertTrue(labelString(in: controller.view, identifier: "rightSideLineNumbers")
+        .components(separatedBy: "\n") == expected,
+               "right gutter numbers real blank source lines")
 }
 
 func testChangedRowsKeepStablePaneWidths() {

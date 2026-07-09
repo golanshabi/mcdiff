@@ -37,6 +37,20 @@ func pickButton(in view: NSView, picksLeft: Bool) -> NSButton? {
     return pickButtons(in: view).first { $0.accessibilityLabel() == label }
 }
 
+func pickButtonBaselineOffset(_ button: NSButton?) -> CGFloat {
+    guard let button,
+          button.attributedTitle.length > 0,
+          let value = button.attributedTitle.attribute(.baselineOffset,
+                                                       at: 0,
+                                                       effectiveRange: nil) else {
+        return 0
+    }
+    if let number = value as? NSNumber {
+        return CGFloat(number.doubleValue)
+    }
+    return value as? CGFloat ?? 0
+}
+
 func sliders(in view: NSView) -> [NSSlider] {
     allSubviews(of: view).compactMap { $0 as? NSSlider }
 }
@@ -238,6 +252,32 @@ func makeConflictedRepository(_ name: String) throws -> URL {
     try runGit(["checkout", "-b", "theirs", baseBranch], in: repo)
     try "theirs\n".write(to: file, atomically: true, encoding: .utf8)
     try runGit(["commit", "-am", "theirs"], in: repo)
+
+    try runGit(["checkout", "ours"], in: repo)
+    _ = try runGit(["merge", "theirs"], in: repo, allowFailure: true)
+    return repo
+}
+
+func makeMarkerlessUnmergedRepository(_ name: String) throws -> URL {
+    let repo = try temporaryDirectory(name)
+    try runGit(["init"], in: repo)
+    try runGit(["config", "user.email", "mcdiff-tests@example.com"], in: repo)
+    try runGit(["config", "user.name", "MacDiff Tests"], in: repo)
+
+    let file = repo.appendingPathComponent("markerless.txt")
+    try "base\n".write(to: file, atomically: true, encoding: .utf8)
+    try runGit(["add", "markerless.txt"], in: repo)
+    try runGit(["commit", "-m", "base"], in: repo)
+    let baseBranch = try runGit(["rev-parse", "--abbrev-ref", "HEAD"], in: repo)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    try runGit(["checkout", "-b", "ours"], in: repo)
+    try "ours keeps the file\n".write(to: file, atomically: true, encoding: .utf8)
+    try runGit(["commit", "-am", "ours modifies"], in: repo)
+
+    try runGit(["checkout", "-b", "theirs", baseBranch], in: repo)
+    try runGit(["rm", "markerless.txt"], in: repo)
+    try runGit(["commit", "-m", "theirs deletes"], in: repo)
 
     try runGit(["checkout", "ours"], in: repo)
     _ = try runGit(["merge", "theirs"], in: repo, allowFailure: true)

@@ -490,6 +490,54 @@ func testMainWindowGitModeSavesAndStagesSelectedConflict() throws {
     }
 }
 
+func testMainWindowGitModeStagesMarkerlessUnmergedFile() throws {
+    let repo = try makeMarkerlessUnmergedRepository("git-ui-markerless")
+    let relativePath = "markerless.txt"
+
+    let controller = MainWindowController()
+    controller.loadView()
+    let testWindow = window(for: controller)
+    layout(testWindow, controller)
+    controller.loadGit(startPath: repo)
+    layout(testWindow, controller)
+
+    let worktreeText = try String(contentsOf: repo.appendingPathComponent(relativePath), encoding: .utf8)
+    assertTrue(!worktreeText.contains("<<<<<<<"), "markerless unmerged fixture has no conflict markers")
+    let unmergedBefore = try runGit(["ls-files", "-u", "--", relativePath], in: repo)
+    assertTrue(!unmergedBefore.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               "markerless fixture starts unmerged")
+
+    guard let fileIndex = controller.gitConflictFiles.firstIndex(where: { ($0.relativePath ?? "") == relativePath }) else {
+        assertTrue(false, "git mode lists markerless unmerged file")
+        return
+    }
+    let file = controller.gitConflictFiles[fileIndex]
+    assertTrue(file.isConflict, "markerless unmerged file is still a git conflict")
+
+    let alert = controller.markerlessConflictAlert(relativePath: relativePath)
+    assertTrue(alert.messageText == controller.markerlessConflictMessage,
+               "markerless conflict alert uses the requested message")
+    assertTrue(alert.buttons.map(\.title) == ["Add to Git", "Cancel"],
+               "markerless conflict alert offers Add to Git")
+
+    controller.selectedGitConflictIndex = fileIndex
+    assertTrue(controller.stageMarkerlessGitConflict(file: file),
+               "markerless unmerged file can be added to git")
+
+    let unmergedAfter = try runGit(["ls-files", "-u", "--", relativePath], in: repo)
+    assertTrue(unmergedAfter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               "adding markerless unmerged file clears unmerged index entries")
+    guard let needsResolution = controller.gitFileBrowserNodes.first(where: { $0.title == "Needs Resolution" }),
+          let reviewChanges = controller.gitFileBrowserNodes.first(where: { $0.title == "Review Changes" }) else {
+        assertTrue(false, "git file browser keeps both folders after adding markerless conflict")
+        return
+    }
+    assertTrue(!needsResolution.children.map(\.title).contains("\(relativePath) (saved)"),
+               "added markerless file leaves needs resolution folder")
+    assertTrue(reviewChanges.children.map(\.title).contains("\(relativePath) (saved)"),
+               "added markerless file moves to review changes folder")
+}
+
 func testMainWindowGitFileBrowserSearchFiltersFolders() throws {
     let repo = try makeConflictedRepository("git-ui-search")
     try "review me\n".write(to: repo.appendingPathComponent("review.txt"), atomically: true, encoding: .utf8)

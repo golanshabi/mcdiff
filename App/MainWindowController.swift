@@ -93,6 +93,8 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
 
     let paneTextFont = NSFont.monospacedSystemFont(ofSize: 12, weight: NSFont.Weight.regular)
     let lineNumberFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+    let pickButtonFont = NSFont.systemFont(ofSize: 18, weight: .medium)
+    let pickButtonBaselineOffset: CGFloat = -2
     let pickButtonSlotWidth: CGFloat = 44
     let lineNumberWidth: CGFloat = 42
     let paneInset: CGFloat = 8
@@ -101,6 +103,8 @@ final class MainWindowController: NSViewController, PaneTextClipViewDelegate, NS
     let horizontalWheelSensitivity: CGFloat = 3
     let gitContextLineCount = 20
     let gitContextExpansionLineCount = 5
+    let markerlessConflictErrorCode = 8
+    let markerlessConflictMessage = "file has no conflicts but is unmerged"
 
     let leftButton = NSButton(title: "Choose Left File", target: nil, action: nil)
     let rightButton = NSButton(title: "Choose Right File", target: nil, action: nil)

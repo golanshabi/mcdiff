@@ -143,11 +143,13 @@ extension MainWindowController {
         view.heightAnchor.constraint(equalToConstant: CGFloat(rowCount) * lineHeight).isActive = true
 
         if block.kind == .changed && !isGitDiffPreview {
-            let button = PickButton(title: picksLeft ? "→" : "←", target: self, action: #selector(pick(_:)))
+            let title = picksLeft ? "→" : "←"
+            let button = PickButton(title: title, target: self, action: #selector(pick(_:)))
             button.block = block
             button.picksLeft = picksLeft
             button.controlSize = .small
-            button.font = NSFont.systemFont(ofSize: 18, weight: .medium)
+            button.font = pickButtonFont
+            button.attributedTitle = attributedPickButtonTitle(title)
             button.toolTip = picksLeft ? "Use Left" : "Use Right"
             button.setAccessibilityLabel(picksLeft ? "Use Left" : "Use Right")
             button.translatesAutoresizingMaskIntoConstraints = false
@@ -565,9 +567,20 @@ extension MainWindowController {
         }
 
         return (0..<rowCount).map { index in
-            guard index < lines.count, !lines[index].isEmpty else { return "" }
+            guard index < lines.count else { return "" }
             return "\(start + index)"
         }
+    }
+
+    func attributedPickButtonTitle(_ title: String) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        return NSAttributedString(string: title, attributes: [
+            .font: pickButtonFont,
+            .foregroundColor: NSColor.labelColor,
+            .baselineOffset: pickButtonBaselineOffset,
+            .paragraphStyle: paragraph
+        ])
     }
 
     func attributedLineNumberText(_ text: String) -> NSAttributedString {

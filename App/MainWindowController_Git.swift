@@ -204,11 +204,15 @@ extension MainWindowController {
                            metadata: "path=\(relativePath)",
                            minimumTotalMilliseconds: 0)
         } catch {
-            AppLogger.error("Git conflict load failed: \(error.localizedDescription)")
-            document = nil
-            gitStatusLabel.stringValue = "Could not load \(relativePath)"
-            render(preservingVerticalPosition: false)
-            show(error.localizedDescription)
+            if isMarkerlessConflictError(error) {
+                handleMarkerlessGitConflict(file: file)
+            } else {
+                AppLogger.error("Git conflict load failed: \(error.localizedDescription)")
+                document = nil
+                gitStatusLabel.stringValue = "Could not load \(relativePath)"
+                render(preservingVerticalPosition: false)
+                show(error.localizedDescription)
+            }
         }
         updateButtons()
     }
@@ -289,12 +293,76 @@ extension MainWindowController {
             ])
         }
         guard parsed.blocks.contains(where: { $0.kind == .changed }) else {
-            throw NSError(domain: "mcdiff", code: 3, userInfo: [
-                NSLocalizedDescriptionKey: "No conflict markers found in \(url.path)."
+            throw NSError(domain: "mcdiff", code: markerlessConflictErrorCode, userInfo: [
+                NSLocalizedDescriptionKey: markerlessConflictMessage
             ])
         }
         document = parsed
         return phases
+    }
+
+    func isMarkerlessConflictError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == "mcdiff"
+            && nsError.code == markerlessConflictErrorCode
+    }
+
+    func handleMarkerlessGitConflict(file: MDGitConflictFile) {
+        let relativePath = file.relativePath ?? ""
+        AppLogger.error("Git conflict has no marker blocks relative_path=\(relativePath)")
+        document = nil
+        gitStatusLabel.stringValue = markerlessConflictMessage
+        render(preservingVerticalPosition: false)
+        guard shouldStageMarkerlessConflict(relativePath: relativePath) else {
+            return
+        }
+
+        stageMarkerlessGitConflict(file: file)
+    }
+
+    @discardableResult
+    func stageMarkerlessGitConflict(file: MDGitConflictFile) -> Bool {
+        guard let gitRepositoryRoot else { return false }
+        let relativePath = file.relativePath ?? ""
+        guard !relativePath.isEmpty else { return false }
+
+        var phases = [TimedPhase]()
+        do {
+            var stageError: NSError?
+            let (staged, stagePhase) = timed("gitStage") {
+                MDGitStageFile(gitRepositoryRoot.path, relativePath, &stageError)
+            }
+            phases.append(stagePhase)
+            guard staged else {
+                logPerformance("stageMarkerlessGitConflict",
+                               phases: phases,
+                               metadata: "path=\(relativePath) failed=stage",
+                               minimumTotalMilliseconds: 0)
+                throw stageError ?? NSError(domain: "mcdiff", code: 6, userInfo: [
+                    NSLocalizedDescriptionKey: "Could not add unmerged file to Git."
+                ])
+            }
+
+            gitResolvedPaths.insert(relativePath)
+            AppLogger.info("Added markerless unmerged git file relative_path=\(relativePath)")
+            phases.append(timed("updateGitControls") { updateGitControls() }.1)
+            if let nextIndex = nextUnresolvedGitConflictIndex(after: selectedGitConflictIndex) {
+                phases.append(timed("loadNextConflict") { loadGitConflictFile(at: nextIndex) }.1)
+            } else {
+                gitStatusLabel.stringValue = "All conflicts saved and staged."
+            }
+            logPerformance("stageMarkerlessGitConflict",
+                           phases: phases,
+                           metadata: "path=\(relativePath)",
+                           minimumTotalMilliseconds: 0)
+            updateButtons()
+            return true
+        } catch {
+            AppLogger.error("Markerless conflict stage failed: \(error.localizedDescription)")
+            show(error.localizedDescription)
+            updateButtons()
+            return false
+        }
     }
 
     func resetGitSession() {

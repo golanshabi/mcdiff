@@ -37,7 +37,7 @@ worktree diffs, and conflicted files keep the resolve-and-stage workflow:
 mcdiff
 ```
 
-To use MacDiff as the default git mergetool:
+To use McDiff as the default git mergetool:
 
 ```bash
 git config --global merge.tool mcdiff
